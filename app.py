@@ -103,9 +103,9 @@ def _last_refresh_text(ts: float) -> str:
 def _live_clock_html() -> str:
     """Return a JS-powered live clock displaying IST."""
     return """
-    <div id="live-clock" style="font-family: monospace; font-size: 2rem; font-weight: 700;
-         color: #e0e0e0; line-height: 1.2;"></div>
-    <div id="live-date" style="font-family: sans-serif; font-size: 0.85rem; color: #999;"></div>
+    <div id="live-clock" style="font-family: monospace; font-size: 1.4rem; font-weight: 700;
+         color: #e0e0e0; line-height: 1.3;"></div>
+    <div id="live-date" style="font-family: sans-serif; font-size: 0.8rem; color: #999; margin-top: 2px;"></div>
     <script>
     function updateClock() {
         const now = new Date();
@@ -125,15 +125,6 @@ def _live_clock_html() -> str:
     """
 
 
-# --- Sidebar (info only) ---
-with st.sidebar:
-    st.title("NIFTY Sentiment")
-    st.caption("Source Weights")
-    sources_cfg = config.get("sources", {})
-    for src_name, src_cfg in sources_cfg.items():
-        if src_cfg.get("enabled", False):
-            st.text(f"{src_cfg.get('description', src_name)}: {src_cfg.get('weight', 1.0)}")
-
 # ============================================================
 # TABS
 # ============================================================
@@ -152,7 +143,7 @@ with tab_premarket:
         st.title("🌅 Pre-Market Analysis")
         st.caption("GIFT Nifty gap, global cues, FII/DII flows, VIX, macro & news sentiment")
     with _h2:
-        components.html(_live_clock_html(), height=70)
+        components.html(_live_clock_html(), height=55)
     with _h3:
         if st.button("Refresh Pre-Market", key="refresh_premarket", type="primary", use_container_width=True):
             with st.spinner("Fetching pre-market sentiment..."):
