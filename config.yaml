@@ -125,6 +125,11 @@ options_desk:
     pcr_bearish: 0.7
     iv_high: 18
     iv_low: 10
+  trade_suggestions:
+    lot_size: 25
+    otm_offset: 2
+    spread_width: 2
+    min_score: 20
 
 dashboard:
   title: "NIFTY Sentiment Dashboard"

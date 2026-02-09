@@ -22,7 +22,9 @@ from core.options_models import (
     SignalCard,
     SignalDirection,
     TechnicalIndicators,
+    TradeSuggestion,
 )
+from core.trade_strategies import generate_trade_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +72,21 @@ class OptionsDeskEngine:
 
         signals = self._build_signals(analytics, technicals)
 
+        # Generate trade suggestions (non-critical — errors don't block snapshot)
+        trade_suggestions: list[TradeSuggestion] = []
+        if analytics and technicals and chain:
+            try:
+                trade_suggestions = generate_trade_suggestions(analytics, technicals, chain)
+            except Exception as exc:
+                logger.error("Trade suggestion generation failed: %s", exc)
+                errors.append(f"Trade suggestions unavailable: {exc}")
+
         return OptionsDeskSnapshot(
             chain=chain,
             analytics=analytics,
             technicals=technicals,
             signals=signals,
+            trade_suggestions=trade_suggestions,
             errors=errors,
         )
 

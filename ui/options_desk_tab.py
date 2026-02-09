@@ -157,6 +157,14 @@ def render_options_desk_tab() -> None:
                         st.markdown(f"- {r}")
 
     # ================================================================
+    # SUGGESTED TRADES (row 1.5)
+    # ================================================================
+    if snap.trade_suggestions:
+        st.divider()
+        st.subheader("Suggested Trades")
+        _render_trade_suggestions(snap.trade_suggestions)
+
+    # ================================================================
     # OPTION CHAIN SNAPSHOT (row 2)
     # ================================================================
     st.divider()
@@ -198,6 +206,83 @@ def render_options_desk_tab() -> None:
     # ================================================================
     st.divider()
     _render_expandable_details(snap)
+
+
+_BIAS_COLORS = {
+    "Bullish": ("#1b5e20", "#e8f5e9"),
+    "Bearish": ("#b71c1c", "#ffebee"),
+    "Neutral": ("#616161", "#f5f5f5"),
+}
+
+_CONFIDENCE_BADGE = {
+    "High": "\u2b50 High",
+    "Medium": "\ud83d\udfe1 Medium",
+    "Low": "\u26aa Low",
+}
+
+
+def _render_trade_suggestions(suggestions: list) -> None:
+    """Render top trade suggestions in a 2x2 card grid."""
+    # 2x2 grid
+    for row_start in range(0, len(suggestions), 2):
+        cols = st.columns(2)
+        for col_idx, s_idx in enumerate(range(row_start, min(row_start + 2, len(suggestions)))):
+            s = suggestions[s_idx]
+            fg, bg = _BIAS_COLORS.get(s.direction_bias, ("#616161", "#f5f5f5"))
+            confidence = _CONFIDENCE_BADGE.get(s.confidence, s.confidence)
+
+            with cols[col_idx]:
+                # Card header
+                st.markdown(
+                    f'<div style="background:{bg}; border-left:4px solid {fg}; '
+                    f'padding:14px; border-radius:8px; margin-bottom:4px;">'
+                    f'<strong style="color:{fg}; font-size:1.15em;">{s.strategy.value}</strong>'
+                    f'<br><span style="color:{fg}; font-size:0.9em;">'
+                    f'{s.direction_bias} &bull; {confidence}</span></div>',
+                    unsafe_allow_html=True,
+                )
+
+                # Legs table
+                leg_rows = ""
+                for leg in s.legs:
+                    action_color = "#b71c1c" if leg.action == "SELL" else "#1b5e20"
+                    leg_rows += (
+                        f"<tr><td style='color:{action_color}; font-weight:600;'>{leg.action}</td>"
+                        f"<td>{leg.instrument}</td>"
+                        f"<td style='text-align:right;'>\u20b9{leg.ltp:.1f}</td></tr>"
+                    )
+                st.markdown(
+                    f"<table style='width:100%; font-size:0.85em; margin:6px 0;'>"
+                    f"<tr style='border-bottom:1px solid #ddd;'>"
+                    f"<th style='text-align:left;'>Action</th>"
+                    f"<th style='text-align:left;'>Instrument</th>"
+                    f"<th style='text-align:right;'>LTP</th></tr>"
+                    f"{leg_rows}</table>",
+                    unsafe_allow_html=True,
+                )
+
+                # Key details
+                st.markdown(f"**Entry:** {s.entry_timing}")
+                st.markdown(f"**Expected:** {s.expected_outcome}")
+
+                detail_cols = st.columns(3)
+                with detail_cols[0]:
+                    st.markdown(f"**Max Profit**  \n{s.max_profit}")
+                with detail_cols[1]:
+                    st.markdown(f"**Max Loss**  \n{s.max_loss}")
+                with detail_cols[2]:
+                    st.markdown(f"**Size**  \n{s.position_size}")
+
+                st.markdown(f"**Stop Loss:** {s.stop_loss}")
+
+                # Expandable reasoning
+                with st.expander("Reasoning & Checks"):
+                    st.markdown("**Why this trade:**")
+                    for r in s.reasoning:
+                        st.markdown(f"- {r}")
+                    st.markdown("**Technicals to watch:**")
+                    for c in s.technicals_to_check:
+                        st.markdown(f"- {c}")
 
 
 def _render_oi_chart(snap, anl) -> None:
