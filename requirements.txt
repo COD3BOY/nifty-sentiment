@@ -3,15 +3,15 @@ pydantic>=2.5.0
 sqlalchemy>=2.0.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
-kiteconnect>=5.0.0
 yfinance>=0.2.30
 feedparser>=6.0.0
-nsepython>=1.0
 anthropic>=0.40.0
 plotly>=5.18.0
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 aiohttp>=3.9.0
-# Tier 3 (install when ready)
-# praw>=7.7.0
-# youtube-transcript-api>=0.6.0
+# Optional: uncomment if you use these sources
+# kiteconnect>=5.0.0      # GIFT Nifty (needs Kite API credentials)
+# nsepython>=1.0           # FII/DII flows (can have install issues)
+# praw>=7.7.0              # Reddit sentiment
+# youtube-transcript-api>=0.6.0  # YouTube sentiment
