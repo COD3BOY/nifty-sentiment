@@ -103,6 +103,29 @@ pre_market:
     vix: 1.5
     crude_oil: 1.0
 
+options_desk:
+  symbol: "NIFTY"
+  nifty_ticker: "^NSEI"
+  candles:
+    period: "5d"
+    interval: "5m"
+  indicators:
+    ema_fast: 9
+    ema_mid: 21
+    ema_slow: 50
+    rsi_period: 9
+    supertrend_period: 10
+    supertrend_multiplier: 3.0
+    bb_period: 20
+    bb_std: 2.0
+  signal_thresholds:
+    rsi_overbought: 70
+    rsi_oversold: 30
+    pcr_bullish: 1.2
+    pcr_bearish: 0.7
+    iv_high: 18
+    iv_low: 10
+
 dashboard:
   title: "NIFTY Sentiment Dashboard"
   auto_refresh_seconds: 300
