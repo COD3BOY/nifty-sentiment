@@ -1,0 +1,109 @@
+# NIFTY Sentiment Prediction System Configuration
+
+sources:
+  gift_nifty:
+    enabled: true
+    weight: 2.5
+    timeout: 30
+    description: "GIFT Nifty pre-market gap"
+    gap_pct_scale: 2.0  # 1% gap maps to 0.5 score
+
+  zerodha_pulse:
+    enabled: true
+    weight: 2.0
+    timeout: 30
+    description: "News sentiment via Zerodha Pulse"
+    max_headlines: 20
+    rss_url: "https://pulse.zerodha.com/feed.php"
+
+  global_markets:
+    enabled: true
+    weight: 2.0
+    timeout: 30
+    description: "S&P 500, Nikkei, Hang Seng, FTSE"
+    indices:
+      "^GSPC": { name: "S&P 500", weight: 1.0 }
+      "^N225": { name: "Nikkei 225", weight: 0.7 }
+      "^HSI": { name: "Hang Seng", weight: 0.7 }
+      "^FTSE": { name: "FTSE 100", weight: 0.5 }
+
+  fii_dii:
+    enabled: true
+    weight: 1.8
+    timeout: 30
+    description: "FII/DII institutional flows"
+    significant_flow_cr: 2000
+    fii_weight: 0.7
+    dii_weight: 0.3
+
+  vix:
+    enabled: true
+    weight: 1.5
+    timeout: 30
+    description: "India VIX fear gauge"
+    ticker: "^INDIAVIX"
+    spike_threshold: 10  # % day-over-day rise
+    spike_amplification: 0.3
+
+  crude_oil:
+    enabled: true
+    weight: 1.0
+    timeout: 30
+    description: "Brent crude + USD/INR"
+    crude_ticker: "BZ=F"
+    inr_ticker: "INR=X"
+    crude_weight: 0.6
+    inr_weight: 0.4
+
+  youtube:
+    enabled: false
+    weight: 0.8
+    timeout: 60
+    description: "YouTube financial advisor sentiment"
+    channels:
+      - "CA Rachana Ranade"
+      - "Akshat Shrivastava"
+      - "Pranjal Kamra"
+
+  reddit:
+    enabled: false
+    weight: 0.5
+    timeout: 30
+    description: "r/IndianStreetBets sentiment"
+    subreddit: "IndianStreetBets"
+    post_limit: 25
+    confidence_discount: 0.7
+
+engine:
+  default_timeout: 30
+  nifty_ticker: "^NSEI"
+  sentiment_levels:
+    strongly_bearish: -0.6
+    bearish: -0.3
+    slightly_bearish: -0.1
+    neutral_low: -0.1
+    neutral_high: 0.1
+    slightly_bullish: 0.1
+    bullish: 0.3
+    strongly_bullish: 0.6
+
+database:
+  path: "data/nifty_sentiment.db"
+
+claude:
+  model: "claude-sonnet-4-5-20250929"
+  max_tokens: 4096
+
+pre_market:
+  weights:
+    gift_nifty: 3.0
+    global_markets: 2.5
+    zerodha_pulse: 2.0
+    fii_dii: 1.8
+    vix: 1.5
+    crude_oil: 1.0
+
+dashboard:
+  title: "NIFTY Sentiment Dashboard"
+  auto_refresh_seconds: 300
+  history_days: 30

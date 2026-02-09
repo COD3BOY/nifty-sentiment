@@ -1,0 +1,528 @@
+"""NIFTY Sentiment Dashboard - Streamlit app."""
+
+import asyncio
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+# Ensure project root is on sys.path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import plotly.graph_objects as go
+import streamlit as st
+
+from core.config import load_config
+from core.engine import SentimentEngine
+from core.models import SentimentLevel
+
+st.set_page_config(
+    page_title="NIFTY Sentiment Dashboard",
+    page_icon="📊",
+    layout="wide",
+)
+
+config = load_config()
+
+# --- Session State Init ---
+if "engine" not in st.session_state:
+    st.session_state.engine = SentimentEngine()
+if "sentiment" not in st.session_state:
+    st.session_state.sentiment = None
+if "pre_market_sentiment" not in st.session_state:
+    st.session_state.pre_market_sentiment = None
+
+engine: SentimentEngine = st.session_state.engine
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+LEVEL_COLORS = {
+    SentimentLevel.STRONGLY_BEARISH: "#d32f2f",
+    SentimentLevel.BEARISH: "#f44336",
+    SentimentLevel.SLIGHTLY_BEARISH: "#ff9800",
+    SentimentLevel.NEUTRAL: "#fdd835",
+    SentimentLevel.SLIGHTLY_BULLISH: "#8bc34a",
+    SentimentLevel.BULLISH: "#4caf50",
+    SentimentLevel.STRONGLY_BULLISH: "#1b5e20",
+}
+
+
+def run_async(coro):
+    """Run an async coroutine from sync Streamlit context."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def _get_source_data(sentiment, source_name: str) -> dict | None:
+    """Extract raw_data for a specific source from aggregated sentiment."""
+    if not sentiment or not sentiment.source_scores:
+        return None
+    for ss in sentiment.source_scores:
+        if ss.source_name == source_name:
+            return {"raw_data": ss.raw_data, "score": ss.score, "confidence": ss.confidence,
+                    "explanation": ss.explanation, "bullish_factors": ss.bullish_factors,
+                    "bearish_factors": ss.bearish_factors}
+    return None
+
+
+def _sentiment_color(score: float) -> str:
+    """Return green/red/gray color based on score sign."""
+    if score > 0.05:
+        return "green"
+    elif score < -0.05:
+        return "red"
+    return "gray"
+
+
+def _arrow(val: float) -> str:
+    """Return up/down arrow based on value."""
+    if val > 0:
+        return "▲"
+    elif val < 0:
+        return "▼"
+    return "—"
+
+
+# --- Sidebar (shared across tabs) ---
+with st.sidebar:
+    st.title("Controls")
+
+    if st.button("🔄 Refresh Pre-Market", key="refresh_premarket", use_container_width=True, type="primary"):
+        with st.spinner("Fetching pre-market sentiment..."):
+            st.session_state.pre_market_sentiment = run_async(engine.compute_sentiment(mode="pre_market"))
+            engine.update_market_actuals()
+        st.rerun()
+
+    if st.button("🔄 Refresh Dashboard", key="refresh_dashboard", use_container_width=True):
+        with st.spinner("Fetching sentiment from all sources..."):
+            st.session_state.sentiment = run_async(engine.compute_sentiment())
+            engine.update_market_actuals()
+        st.rerun()
+
+    st.divider()
+    st.caption("Source Weights (Default)")
+    sources_cfg = config.get("sources", {})
+    for src_name, src_cfg in sources_cfg.items():
+        if src_cfg.get("enabled", False):
+            st.text(f"{src_cfg.get('description', src_name)}: {src_cfg.get('weight', 1.0)}")
+
+# ============================================================
+# TABS
+# ============================================================
+tab_premarket, tab_dashboard = st.tabs(["🌅 Pre-Market Analysis", "📊 Sentiment Dashboard"])
+
+
+# ============================================================
+# TAB 1: PRE-MARKET ANALYSIS
+# ============================================================
+with tab_premarket:
+    st.title("🌅 Pre-Market Analysis")
+
+    # --- Pre-Market Readiness ---
+    now_ist = datetime.now(IST)
+    market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    if now_ist < market_open:
+        time_to_open = market_open - now_ist
+        hours, remainder = divmod(int(time_to_open.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        status_text = f"⏳ Market opens in **{hours}h {minutes}m {seconds}s**"
+        status_color = "🟡"
+    elif now_ist <= market_close:
+        status_text = "🟢 **Market is OPEN**"
+        status_color = "🟢"
+    else:
+        status_text = "🔴 **Market is CLOSED**"
+        status_color = "🔴"
+
+    col_status, col_time = st.columns([2, 1])
+    with col_status:
+        st.markdown(f"### {status_color} Market Status")
+        st.markdown(status_text)
+    with col_time:
+        st.metric("Current Time (IST)", now_ist.strftime("%H:%M:%S"))
+        st.caption(now_ist.strftime("%A, %d %B %Y"))
+
+    st.divider()
+
+    pm = st.session_state.pre_market_sentiment
+
+    if pm is None:
+        st.info("Click **Refresh Pre-Market** in the sidebar to fetch the latest pre-market analysis.")
+        # Still show the market status section above, but stop for data sections
+    else:
+        # --- GIFT Nifty Gap ---
+        gift = _get_source_data(pm, "gift_nifty")
+        st.subheader("🎯 GIFT Nifty Gap")
+        if gift and gift["raw_data"]:
+            rd = gift["raw_data"]
+            gap_pct = rd.get("gap_pct", 0)
+            ltp = rd.get("gift_nifty_ltp", 0)
+            prev_close = rd.get("nifty_prev_close", 0)
+            arrow = _arrow(gap_pct)
+            color = "green" if gap_pct > 0 else "red" if gap_pct < 0 else "gray"
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Gap", f"{gap_pct:+.2f}%", delta=f"{arrow} {'Up' if gap_pct > 0 else 'Down' if gap_pct < 0 else 'Flat'}")
+            with c2:
+                st.metric("GIFT Nifty LTP", f"{ltp:,.0f}")
+            with c3:
+                st.metric("NIFTY Prev Close", f"{prev_close:,.0f}")
+            st.caption(gift["explanation"])
+        else:
+            st.caption("GIFT Nifty data unavailable (Kite Connect credentials needed)")
+
+        st.divider()
+
+        # --- Overnight Global Cues ---
+        gm = _get_source_data(pm, "global_markets")
+        st.subheader("🌍 Overnight Global Cues")
+        if gm and gm["raw_data"]:
+            indices = gm["raw_data"].get("indices", [])
+            if indices:
+                cols = st.columns(len(indices))
+                for i, idx in enumerate(indices):
+                    with cols[i]:
+                        change = idx.get("change_pct", 0)
+                        delta_color = "normal" if change >= 0 else "inverse"
+                        st.metric(
+                            idx.get("name", idx.get("ticker", "?")),
+                            f"{idx.get('current_price', 0):,.0f}",
+                            delta=f"{change:+.2f}%",
+                            delta_color=delta_color,
+                        )
+            st.caption(gm["explanation"])
+        else:
+            st.caption("Global markets data unavailable")
+
+        st.divider()
+
+        # --- FII/DII Positioning ---
+        fii = _get_source_data(pm, "fii_dii")
+        st.subheader("🏦 FII/DII Positioning")
+        if fii and fii["raw_data"]:
+            rd = fii["raw_data"]
+            fii_net = rd.get("fii_net", 0)
+            dii_net = rd.get("dii_net", 0)
+            combined = fii_net + dii_net
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("FII Net", f"₹{fii_net:,.0f} Cr",
+                          delta=f"{'Buying' if fii_net > 0 else 'Selling'}",
+                          delta_color="normal" if fii_net >= 0 else "inverse")
+            with c2:
+                st.metric("DII Net", f"₹{dii_net:,.0f} Cr",
+                          delta=f"{'Buying' if dii_net > 0 else 'Selling'}",
+                          delta_color="normal" if dii_net >= 0 else "inverse")
+            with c3:
+                st.metric("Combined Net", f"₹{combined:,.0f} Cr",
+                          delta=f"{'Net Inflow' if combined > 0 else 'Net Outflow'}",
+                          delta_color="normal" if combined >= 0 else "inverse")
+            st.caption(fii["explanation"])
+        else:
+            st.caption("FII/DII data unavailable (nsepython needed)")
+
+        st.divider()
+
+        # --- Fear Gauge (VIX) ---
+        vix_data = _get_source_data(pm, "vix")
+        st.subheader("😰 Fear Gauge — India VIX")
+        if vix_data and vix_data["raw_data"]:
+            rd = vix_data["raw_data"]
+            current_vix = rd.get("current_vix", 0)
+            day_change = rd.get("day_change_pct", 0)
+            spike = rd.get("spike_detected", False)
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("VIX Level", f"{current_vix:.1f}",
+                          delta=f"{day_change:+.1f}%",
+                          delta_color="inverse" if day_change > 0 else "normal")
+            with c2:
+                if current_vix < 15:
+                    zone = "🟢 Low Fear"
+                elif current_vix < 20:
+                    zone = "🟡 Moderate"
+                elif current_vix < 25:
+                    zone = "🟠 Elevated"
+                else:
+                    zone = "🔴 High Fear"
+                st.metric("Fear Zone", zone)
+            with c3:
+                st.metric("Spike Alert", "⚠️ YES" if spike else "✅ No")
+            st.caption(vix_data["explanation"])
+        else:
+            st.caption("VIX data unavailable")
+
+        st.divider()
+
+        # --- Macro Pulse (Crude + USD/INR) ---
+        macro = _get_source_data(pm, "crude_oil")
+        st.subheader("🛢️ Macro Pulse")
+        if macro and macro["raw_data"]:
+            rd = macro["raw_data"]
+            c1, c2 = st.columns(2)
+            with c1:
+                crude_price = rd.get("crude_price")
+                crude_change = rd.get("crude_change_pct")
+                if crude_price is not None:
+                    st.metric("Brent Crude", f"${crude_price:.1f}",
+                              delta=f"{crude_change:+.1f}%",
+                              delta_color="inverse" if crude_change > 0 else "normal")
+                else:
+                    st.caption("Crude oil data unavailable")
+            with c2:
+                usdinr = rd.get("usdinr")
+                usdinr_change = rd.get("usdinr_change_pct")
+                if usdinr is not None:
+                    st.metric("USD/INR", f"₹{usdinr:.2f}",
+                              delta=f"{usdinr_change:+.2f}%",
+                              delta_color="inverse" if usdinr_change > 0 else "normal")
+                else:
+                    st.caption("USD/INR data unavailable")
+            st.caption(macro["explanation"])
+        else:
+            st.caption("Macro data unavailable")
+
+        st.divider()
+
+        # --- News Sentiment ---
+        news = _get_source_data(pm, "zerodha_pulse")
+        st.subheader("📰 News Sentiment")
+        if news and news["raw_data"]:
+            rd = news["raw_data"]
+            headline_sentiments = rd.get("headline_sentiments", [])
+            if headline_sentiments:
+                for hs in headline_sentiments:
+                    score = hs.get("score", 0)
+                    color = _sentiment_color(score)
+                    st.markdown(
+                        f":{color}[{_arrow(score)} **{score:+.2f}**] — {hs.get('headline', '')}"
+                    )
+                    st.caption(f"  _{hs.get('reasoning', '')}_")
+            else:
+                # Fallback to plain headlines
+                headlines = rd.get("headlines", [])
+                for h in headlines:
+                    st.markdown(f"- {h}")
+            st.caption(f"Overall news score: **{news['score']:+.3f}** | {news['explanation']}")
+        else:
+            st.caption("News data unavailable (requires ANTHROPIC_API_KEY)")
+
+        st.divider()
+
+        # --- Pre-Market Verdict ---
+        st.subheader("🎯 Pre-Market Verdict")
+
+        col_gauge, col_factors = st.columns([1, 1])
+
+        with col_gauge:
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=pm.overall_score,
+                title={"text": pm.level.value.replace("_", " ").title()},
+                number={"suffix": "", "valueformat": ".2f"},
+                gauge={
+                    "axis": {"range": [-1, 1], "tickwidth": 1},
+                    "bar": {"color": LEVEL_COLORS.get(pm.level, "#888")},
+                    "steps": [
+                        {"range": [-1.0, -0.6], "color": "#ffcdd2"},
+                        {"range": [-0.6, -0.3], "color": "#ffe0b2"},
+                        {"range": [-0.3, -0.1], "color": "#fff9c4"},
+                        {"range": [-0.1, 0.1], "color": "#f5f5f5"},
+                        {"range": [0.1, 0.3], "color": "#dcedc8"},
+                        {"range": [0.3, 0.6], "color": "#c8e6c9"},
+                        {"range": [0.6, 1.0], "color": "#a5d6a7"},
+                    ],
+                    "threshold": {
+                        "line": {"color": "black", "width": 4},
+                        "thickness": 0.75,
+                        "value": pm.overall_score,
+                    },
+                },
+            ))
+            fig.update_layout(height=300, margin=dict(t=60, b=20, l=30, r=30))
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_factors:
+            st.markdown("**Bullish Factors**")
+            if pm.bullish_factors:
+                for f in pm.bullish_factors[:5]:
+                    st.markdown(f"- 🟢 {f}")
+            else:
+                st.caption("No bullish factors identified")
+
+            st.markdown("**Bearish Factors**")
+            if pm.bearish_factors:
+                for f in pm.bearish_factors[:5]:
+                    st.markdown(f"- 🔴 {f}")
+            else:
+                st.caption("No bearish factors identified")
+
+        st.metric("Confidence", f"{pm.confidence:.1%}")
+        st.caption(f"Sources: {pm.sources_used} active / {pm.sources_failed} failed | "
+                   f"Updated: {pm.timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
+
+
+# ============================================================
+# TAB 2: SENTIMENT DASHBOARD (existing content, unchanged)
+# ============================================================
+with tab_dashboard:
+    st.title("📊 NIFTY Sentiment Dashboard")
+
+    sentiment = st.session_state.sentiment
+
+    if sentiment is None:
+        st.info("Click **Refresh Dashboard** in the sidebar to fetch the latest analysis.")
+        st.stop()
+
+    # --- Row 1: Gauge + Summary ---
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.subheader("Market Sentiment Gauge")
+
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=sentiment.overall_score,
+            title={"text": sentiment.level.value.replace("_", " ").title()},
+            number={"suffix": "", "valueformat": ".2f"},
+            gauge={
+                "axis": {"range": [-1, 1], "tickwidth": 1},
+                "bar": {"color": LEVEL_COLORS.get(sentiment.level, "#888")},
+                "steps": [
+                    {"range": [-1.0, -0.6], "color": "#ffcdd2"},
+                    {"range": [-0.6, -0.3], "color": "#ffe0b2"},
+                    {"range": [-0.3, -0.1], "color": "#fff9c4"},
+                    {"range": [-0.1, 0.1], "color": "#f5f5f5"},
+                    {"range": [0.1, 0.3], "color": "#dcedc8"},
+                    {"range": [0.3, 0.6], "color": "#c8e6c9"},
+                    {"range": [0.6, 1.0], "color": "#a5d6a7"},
+                ],
+                "threshold": {
+                    "line": {"color": "black", "width": 4},
+                    "thickness": 0.75,
+                    "value": sentiment.overall_score,
+                },
+            },
+        ))
+        fig.update_layout(height=300, margin=dict(t=60, b=20, l=30, r=30))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.subheader("Summary")
+        st.metric("Overall Score", f"{sentiment.overall_score:.3f}")
+        st.metric("Confidence", f"{sentiment.confidence:.1%}")
+        st.metric("Sources", f"{sentiment.sources_used} active / {sentiment.sources_failed} failed")
+        st.caption(f"Last updated: {sentiment.timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
+
+    # --- Row 2: Source Breakdown ---
+    st.divider()
+    st.subheader("Per-Source Breakdown")
+
+    if sentiment.source_scores:
+        # Horizontal bar chart
+        source_names = [ss.source_name.replace("_", " ").title() for ss in sentiment.source_scores]
+        source_values = [ss.score for ss in sentiment.source_scores]
+        colors = ["#4caf50" if v >= 0 else "#f44336" for v in source_values]
+
+        fig_bar = go.Figure(go.Bar(
+            x=source_values,
+            y=source_names,
+            orientation="h",
+            marker_color=colors,
+            text=[f"{v:+.3f}" for v in source_values],
+            textposition="outside",
+        ))
+        fig_bar.update_layout(
+            xaxis=dict(range=[-1.1, 1.1], title="Sentiment Score"),
+            yaxis=dict(autorange="reversed"),
+            height=max(200, len(source_names) * 50),
+            margin=dict(t=20, b=40, l=120, r=40),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # Detail table
+        with st.expander("Source Details", expanded=False):
+            for ss in sentiment.source_scores:
+                st.markdown(f"**{ss.source_name.replace('_', ' ').title()}** — Score: `{ss.score:+.3f}` | Confidence: `{ss.confidence:.1%}`")
+                st.caption(ss.explanation)
+                if ss.bullish_factors:
+                    st.markdown("  🟢 " + " | ".join(ss.bullish_factors))
+                if ss.bearish_factors:
+                    st.markdown("  🔴 " + " | ".join(ss.bearish_factors))
+                st.divider()
+
+    # --- Row 3: Key Drivers ---
+    st.divider()
+    col_bull, col_bear = st.columns(2)
+
+    with col_bull:
+        st.subheader("🟢 Bullish Factors")
+        if sentiment.bullish_factors:
+            for f in sentiment.bullish_factors:
+                st.markdown(f"- {f}")
+        else:
+            st.caption("No bullish factors identified")
+
+    with col_bear:
+        st.subheader("🔴 Bearish Factors")
+        if sentiment.bearish_factors:
+            for f in sentiment.bearish_factors:
+                st.markdown(f"- {f}")
+        else:
+            st.caption("No bearish factors identified")
+
+    # --- Row 4: Historical Chart ---
+    st.divider()
+    st.subheader("Historical Sentiment")
+
+    history_days = st.slider("Historical range (days)", 7, 90, 30, key="hist_days")
+
+    history = engine.get_historical(days=history_days)
+    if history:
+        dates = [h["timestamp"] for h in history]
+        scores = [h["overall_score"] for h in history]
+
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(
+            x=dates, y=scores,
+            mode="lines+markers",
+            name="Sentiment Score",
+            line=dict(color="#1976d2", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(25, 118, 210, 0.1)",
+        ))
+        fig_hist.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+        fig_hist.add_hrect(y0=-1, y1=-0.3, fillcolor="rgba(244,67,54,0.05)", line_width=0)
+        fig_hist.add_hrect(y0=0.3, y1=1, fillcolor="rgba(76,175,80,0.05)", line_width=0)
+        fig_hist.update_layout(
+            yaxis=dict(range=[-1.1, 1.1], title="Score"),
+            xaxis=dict(title="Date"),
+            height=350,
+            margin=dict(t=20, b=40),
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.caption("No historical data yet. Run a few analyses to build history.")
+
+    # --- Row 5: Accuracy Tracking ---
+    st.divider()
+    st.subheader("Prediction Accuracy")
+
+    accuracy = engine.get_accuracy(days=history_days)
+    if accuracy["total"] > 0:
+        col_a1, col_a2, col_a3 = st.columns(3)
+        with col_a1:
+            st.metric("Accuracy", f"{accuracy['accuracy']:.1f}%")
+        with col_a2:
+            st.metric("Correct", accuracy["correct"])
+        with col_a3:
+            st.metric("Total Predictions", accuracy["total"])
+    else:
+        st.caption("Accuracy tracking will begin once market actuals are recorded. Run daily to build data.")
