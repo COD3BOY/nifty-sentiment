@@ -159,10 +159,12 @@ def render_options_desk_tab() -> None:
     # ================================================================
     # SUGGESTED TRADES (row 1.5)
     # ================================================================
+    st.divider()
+    st.subheader("Suggested Trades")
     if snap.trade_suggestions:
-        st.divider()
-        st.subheader("Suggested Trades")
         _render_trade_suggestions(snap.trade_suggestions)
+    else:
+        st.info("Trade strategies will appear here during market hours when live option chain data is available.")
 
     # ================================================================
     # OPTION CHAIN SNAPSHOT (row 2)
