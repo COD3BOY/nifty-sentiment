@@ -564,7 +564,6 @@ def evaluate_and_manage(
         state.is_auto_trading
         and suggestions
         and chain
-        and refresh_ts > state.last_open_refresh_ts
         and len(state.open_positions) < max_positions
     ):
         # Track held strategy types to avoid duplicates
@@ -598,9 +597,6 @@ def evaluate_and_manage(
             state = state.model_copy(
                 update={"open_positions": state.open_positions + [position]},
             )
-
-        if opened_any:
-            state = state.model_copy(update={"last_open_refresh_ts": refresh_ts})
 
     return state
 
