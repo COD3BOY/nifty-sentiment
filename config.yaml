@@ -156,6 +156,7 @@ paper_trading:
     brokerage_per_order: 20
     stt_sell_pct: 0.001
     exchange_txn_pct: 0.00035
+    sebi_turnover_pct: 0.000001    # ₹10/crore on total turnover
     gst_pct: 0.18
     stamp_duty_buy_pct: 0.00003
   expiry_guards:
@@ -164,13 +165,13 @@ paper_trading:
     min_net_premium_per_lot: 100            # Skip if |net premium| per lot < ₹100
 
   margin_estimates:
-    short_straddle: 175000
-    short_strangle: 155000
-    bull_put_spread: 35000
-    bear_call_spread: 35000
+    short_straddle: 150000
+    short_strangle: 135000
+    bull_put_spread: 65000
+    bear_call_spread: 65000
     bull_call_spread: 0
     bear_put_spread: 0
-    iron_condor: 40000
+    iron_condor: 45000
     long_call_ce: 0
     long_put_pe: 0
     long_straddle: 0

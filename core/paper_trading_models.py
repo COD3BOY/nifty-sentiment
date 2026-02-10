@@ -29,6 +29,14 @@ class PositionStatus(str, Enum):
     CLOSED_TIME_LIMIT = "closed_time_limit"
 
 
+class MarginSource(str, Enum):
+    KITE = "kite"
+    CACHED = "cached"
+    HEURISTIC = "heuristic"
+    STATIC = "static"
+    PREMIUM = "premium"
+
+
 class PositionLeg(BaseModel):
     """Single leg of a paper-traded position."""
 
@@ -69,6 +77,7 @@ class PaperPosition(BaseModel):
     profit_target_amount: float = 0.0
     execution_cost: float = 0.0
     margin_required: float = 0.0
+    margin_source: str = "static"
     entry_context: dict | None = None  # serialized MarketContextSnapshot
     peak_pnl: float = 0.0      # best unrealized PnL during hold
     trough_pnl: float = 0.0    # worst unrealized PnL during hold
@@ -97,6 +106,7 @@ class TradeRecord(BaseModel):
     execution_cost: float = 0.0
     net_pnl: float = 0.0
     margin_required: float = 0.0
+    margin_source: str = "static"
     net_premium: float
     stop_loss_amount: float
     profit_target_amount: float

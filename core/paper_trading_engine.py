@@ -18,6 +18,7 @@ from core.paper_trading_models import _now_ist
 
 from core.config import load_config
 from core.kite_margins import get_kite_charges, get_kite_margin
+from core.margin_cache import get_cached_margin, update_cached_margin
 from core.options_models import (
     OptionChainData,
     OptionsAnalytics,
@@ -26,6 +27,7 @@ from core.options_models import (
     TradeSuggestion,
 )
 from core.paper_trading_models import (
+    MarginSource,
     PaperPosition,
     PaperTradingState,
     PositionLeg,
@@ -157,61 +159,115 @@ def _strategy_margin_key(strategy: str | StrategyName) -> str:
     return strategy.lower().replace(" ", "_")
 
 
+_NOTIONAL_MARGIN_PCT: dict[str, float] = {
+    "short_straddle": 0.10,    # ~150K at NIFTY 23000
+    "short_strangle": 0.09,    # ~135K
+    "bull_put_spread": 0.04,   # ~60K
+    "bear_call_spread": 0.04,
+    "iron_condor": 0.03,       # ~45K
+    # debit strategies: 0.0 → falls through to premium fallback
+}
+
+
+def _compute_notional_margin(
+    strategy_key: str, suggestion: TradeSuggestion, lot_size: int,
+) -> float | None:
+    """Estimate margin as a percentage of notional value (avg strike * lot_size).
+
+    Returns None for debit strategies (pct == 0) so the caller falls through.
+    """
+    pct = _NOTIONAL_MARGIN_PCT.get(strategy_key, 0.0)
+    if pct == 0.0:
+        return None
+    strikes = [leg.strike for leg in suggestion.legs]
+    if not strikes:
+        return None
+    avg_strike = sum(strikes) / len(strikes)
+    return pct * avg_strike * lot_size
+
+
 def compute_lots(
     strategy: str | StrategyName,
     available_capital: float,
     lot_size: int,
     suggestion: TradeSuggestion,
     expiry: str | None = None,
-) -> tuple[int, float]:
+) -> tuple[int, float, str]:
     """Compute how many lots to trade based on capital and margin requirements.
 
     Two-pass approach:
-      Pass 1: Use 1-lot margin (Kite or static) to estimate lot count.
+      Pass 1: Use tiered margin fallback to estimate lot count.
+              Kite live → Cached SPAN (24h) → Notional heuristic → Static config → Premium
       Pass 2: Call Kite with actual lots for true SPAN margin (hedge benefits).
 
-    Returns (lots, total_margin).
+    Returns (lots, total_margin, margin_source).
     """
     cfg = _pt_cfg()
     max_lots = cfg.get("max_lots", 4)
     utilization = cfg.get("capital_utilization", 0.70)
 
     margin_per_lot: float = 0
+    margin_source: str = MarginSource.STATIC.value
+    key = _strategy_margin_key(strategy)
     legs_dicts = [
         {"action": leg.action, "strike": leg.strike, "option_type": leg.option_type, "ltp": leg.ltp}
         for leg in suggestion.legs
     ]
 
-    # Pass 1 — sizing estimate using 1-lot margin
+    # --- Pass 1: Tiered fallback for 1-lot margin ---
+
+    # Tier 1: Kite live SPAN
     if expiry:
         kite_margin_1 = get_kite_margin(legs_dicts, expiry, lots=1, lot_size=lot_size)
         if kite_margin_1 is not None:
             margin_per_lot = kite_margin_1
+            margin_source = MarginSource.KITE.value
+            # Persist to disk cache for future fallback
+            update_cached_margin(key, margin_per_lot)
 
-    # Fallback to static estimates
+    # Tier 2: Cached SPAN from disk (24h TTL)
+    if margin_per_lot == 0:
+        cached = get_cached_margin(key)
+        if cached is not None:
+            margin_per_lot = cached
+            margin_source = MarginSource.CACHED.value
+
+    # Tier 3: Notional heuristic
+    if margin_per_lot == 0:
+        heuristic = _compute_notional_margin(key, suggestion, lot_size)
+        if heuristic is not None:
+            margin_per_lot = heuristic
+            margin_source = MarginSource.HEURISTIC.value
+
+    # Tier 4: Static config
     if margin_per_lot == 0:
         margin_estimates = cfg.get("margin_estimates", {})
-        key = _strategy_margin_key(strategy)
         margin_per_lot = margin_estimates.get(key, 0)
+        if margin_per_lot > 0:
+            margin_source = MarginSource.STATIC.value
 
+    # Tier 5: Net premium per lot (debit strategies)
     if margin_per_lot == 0:
-        # Debit strategy — use net premium per lot as "margin"
         per_lot_premium = abs(
             sum(leg.ltp * (1 if leg.action == "BUY" else -1) for leg in suggestion.legs)
         ) * lot_size
         margin_per_lot = per_lot_premium if per_lot_premium > 0 else 1  # safety
+        margin_source = MarginSource.PREMIUM.value
 
     usable_capital = available_capital * utilization
     lots = max(1, min(max_lots, math.floor(usable_capital / margin_per_lot)))
 
-    # Pass 2 — accurate SPAN margin for actual lot count
+    # --- Pass 2: Accurate SPAN margin for actual lot count ---
     total_margin = margin_per_lot * lots  # default: linear estimate
     if expiry and lots > 0:
         kite_margin_n = get_kite_margin(legs_dicts, expiry, lots=lots, lot_size=lot_size)
         if kite_margin_n is not None:
             total_margin = kite_margin_n
+            margin_source = MarginSource.KITE.value
+            # Update cache with N-lot per-lot value
+            update_cached_margin(key, total_margin / lots)
 
-    return lots, total_margin
+    return lots, total_margin, margin_source
 
 
 def compute_execution_cost(
@@ -224,7 +280,7 @@ def compute_execution_cost(
     """Compute estimated execution cost for a round-trip trade.
 
     Tries Kite virtual contract note first; falls back to static formula
-    that includes brokerage, STT, exchange txn charges, GST, and stamp duty.
+    that includes brokerage, STT, exchange txn charges, SEBI fee, GST, and stamp duty.
     """
     # Try Kite charges API first
     if expiry:
@@ -242,6 +298,7 @@ def compute_execution_cost(
     brokerage_per_order = cost_cfg.get("brokerage_per_order", 20)
     stt_sell_pct = cost_cfg.get("stt_sell_pct", 0.001)
     exchange_txn_pct = cost_cfg.get("exchange_txn_pct", 0.00035)
+    sebi_turnover_pct = cost_cfg.get("sebi_turnover_pct", 0.000001)
     gst_pct = cost_cfg.get("gst_pct", 0.18)
     stamp_duty_buy_pct = cost_cfg.get("stamp_duty_buy_pct", 0.00003)
 
@@ -269,14 +326,17 @@ def compute_execution_cost(
     # Exchange transaction charges on total round-trip turnover
     exchange_txn = total_turnover * exchange_txn_pct
 
-    # GST on brokerage + exchange charges
-    gst = (brokerage + exchange_txn) * gst_pct
+    # SEBI turnover fee (₹10/crore on total turnover)
+    sebi_fee = total_turnover * sebi_turnover_pct
+
+    # GST on brokerage + exchange charges + SEBI fee
+    gst = (brokerage + exchange_txn + sebi_fee) * gst_pct
 
     # Stamp duty on buy-side turnover (entry BUY legs + exit of SELL legs)
     total_buy_turnover = sell_turnover + buy_turnover  # mirrors sell side
     stamp_duty = total_buy_turnover * stamp_duty_buy_pct
 
-    return brokerage + stt + exchange_txn + gst + stamp_duty
+    return brokerage + stt + exchange_txn + sebi_fee + gst + stamp_duty
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +357,13 @@ def open_position(
 
     # Position sizing
     if available_capital is not None:
-        lots, total_margin = compute_lots(
+        lots, total_margin, margin_source = compute_lots(
             suggestion.strategy, available_capital, lot_size, suggestion, expiry=expiry,
         )
     else:
         lots = 1
         total_margin = 0.0
+        margin_source = MarginSource.STATIC.value
 
     net_premium, sl, pt = compute_risk_params(suggestion, lot_size, lots)
 
@@ -359,6 +420,7 @@ def open_position(
         profit_target_amount=pt,
         execution_cost=exec_cost,
         margin_required=total_margin,
+        margin_source=margin_source,
         entry_context=entry_context_dict,
     )
 
@@ -483,6 +545,7 @@ def close_position(
         execution_cost=position.execution_cost,
         net_pnl=gross_pnl - position.execution_cost,
         margin_required=position.margin_required,
+        margin_source=position.margin_source,
         net_premium=position.net_premium,
         stop_loss_amount=position.stop_loss_amount,
         profit_target_amount=position.profit_target_amount,
@@ -734,10 +797,10 @@ def evaluate_and_manage(
                 technicals=technicals, analytics=analytics, chain=chain,
             )
             logger.info(
-                "Paper trade opened: %s | bias=%s | conf=%s | score=%.1f | lots=%d | margin=%.0f | premium=%.2f | cost=%.2f",
+                "Paper trade opened: %s | bias=%s | conf=%s | score=%.1f | lots=%d | margin=%.0f (%s) | premium=%.2f | cost=%.2f",
                 position.strategy, position.direction_bias, position.confidence,
                 position.score, position.lots, position.margin_required,
-                position.net_premium, position.execution_cost,
+                position.margin_source, position.net_premium, position.execution_cost,
             )
             held_strategies.add(position.strategy)
             # Update state: add position + record trade timestamp

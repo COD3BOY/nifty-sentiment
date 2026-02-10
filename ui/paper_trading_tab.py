@@ -264,6 +264,25 @@ def _render_eod_downloads(state: PaperTradingState) -> None:
         )
 
 
+_MARGIN_BADGE = {
+    "kite": ("Kite SPAN", "#22c55e"),      # green
+    "cached": ("Cached SPAN", "#3b82f6"),   # blue
+    "heuristic": ("Heuristic", "#f59e0b"),  # amber
+    "static": ("Static", "#94a3b8"),        # gray
+    "premium": ("Premium", "#94a3b8"),      # gray
+}
+
+
+def _render_margin_badge(source: str, prefix: str = "") -> None:
+    """Render a color-coded badge indicating the margin source."""
+    label, color = _MARGIN_BADGE.get(source, ("Static", "#94a3b8"))
+    st.caption(
+        f'{prefix}<span style="background:{color};color:white;padding:1px 6px;'
+        f'border-radius:3px;font-size:0.75em">{label}</span>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_open_position_card(
     state: PaperTradingState,
     pos: PaperPosition,
@@ -346,6 +365,7 @@ def _render_open_position_card(
             st.metric("Net Premium", f"\u20b9{pos.net_premium:,.0f}")
         with m2:
             st.metric("Margin Required", f"\u20b9{pos.margin_required:,.0f}")
+            _render_margin_badge(pos.margin_source)
         with m3:
             st.metric("Est. Cost", f"\u20b9{pos.execution_cost:,.0f}")
         with m4:
@@ -412,6 +432,9 @@ def _render_trade_history(state: PaperTradingState) -> None:
                     if t.spot_at_exit > 0:
                         move = t.spot_at_exit - t.spot_at_entry
                         st.metric("Spot at Exit", f"{t.spot_at_exit:,.1f}", delta=f"{move:+.1f}")
+
+            # Margin source badge
+            _render_margin_badge(t.margin_source, prefix="Margin: ")
 
             # Legs detail
             leg_rows = []
