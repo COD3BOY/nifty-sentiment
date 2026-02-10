@@ -86,15 +86,16 @@ def render_paper_trading_tab(
     st.divider()
 
     # --- Capital metrics ---
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         st.metric("Initial Capital", f"\u20b9{state.initial_capital:,.0f}")
     with c2:
+        net_rpnl = state.net_realized_pnl
         st.metric(
-            "Realized P&L",
-            _fmt_pnl(state.total_realized_pnl),
-            delta=_fmt_pnl(state.total_realized_pnl) if state.total_realized_pnl != 0 else None,
-            delta_color="normal" if state.total_realized_pnl >= 0 else "inverse",
+            "Net Realized P&L",
+            _fmt_pnl(net_rpnl),
+            delta=_fmt_pnl(net_rpnl) if net_rpnl != 0 else None,
+            delta_color="normal" if net_rpnl >= 0 else "inverse",
         )
     with c3:
         unr = state.unrealized_pnl
@@ -108,6 +109,8 @@ def render_paper_trading_tab(
         net_cap = state.capital_remaining + state.unrealized_pnl
         st.metric("Net Capital", f"\u20b9{net_cap:,.0f}")
     with c5:
+        st.metric("Total Costs", f"\u20b9{state.total_execution_costs:,.0f}")
+    with c6:
         trades = len(state.trade_log)
         wr = state.win_rate
         st.metric("Trades / Win Rate", f"{trades} / {wr:.0f}%")
@@ -138,14 +141,16 @@ def _render_open_position(state: PaperTradingState) -> None:
     st.subheader("Open Position")
 
     # Strategy info row
-    info1, info2, info3, info4 = st.columns(4)
+    info1, info2, info3, info4, info5 = st.columns(5)
     with info1:
         st.markdown(f"**Strategy:** {pos.strategy}")
     with info2:
         st.markdown(f"**Bias:** {pos.direction_bias}")
     with info3:
-        st.markdown(f"**Confidence:** {pos.confidence}")
+        st.markdown(f"**Lots:** {pos.lots}")
     with info4:
+        st.markdown(f"**Confidence:** {pos.confidence}")
+    with info5:
         st.markdown(f"**Entry:** {pos.entry_time.strftime('%H:%M:%S')}")
 
     # Legs table
@@ -161,7 +166,7 @@ def _render_open_position(state: PaperTradingState) -> None:
     st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
 
     # P&L and risk params
-    pnl_col, sl_col, pt_col, btn_col = st.columns([2, 1, 1, 1])
+    pnl_col, sl_col, pt_col, cost_col, btn_col = st.columns([2, 1, 1, 1, 1])
     with pnl_col:
         pnl = pos.total_unrealized_pnl
         color = _pnl_color(pnl)
@@ -174,6 +179,8 @@ def _render_open_position(state: PaperTradingState) -> None:
         st.metric("Stop Loss", f"\u20b9{pos.stop_loss_amount:,.0f}")
     with pt_col:
         st.metric("Profit Target", f"\u20b9{pos.profit_target_amount:,.0f}")
+    with cost_col:
+        st.metric("Est. Cost", f"\u20b9{pos.execution_cost:,.0f}")
     with btn_col:
         if st.button("Close Position", key="manual_close_btn", type="secondary", use_container_width=True):
             closed_pos, record = close_position(pos, PositionStatus.CLOSED_MANUAL)
@@ -182,6 +189,7 @@ def _render_open_position(state: PaperTradingState) -> None:
                     "current_position": None,
                     "trade_log": state.trade_log + [record],
                     "total_realized_pnl": state.total_realized_pnl + record.realized_pnl,
+                    "total_execution_costs": state.total_execution_costs + record.execution_cost,
                     "last_open_refresh_ts": st.session_state.get("options_last_refresh", 0.0),
                 },
             )
@@ -196,10 +204,13 @@ def _render_trade_history(state: PaperTradingState) -> None:
         rows.append({
             "#": i,
             "Strategy": t.strategy,
+            "Lots": t.lots,
             "Bias": t.direction_bias,
             "Entry": t.entry_time.strftime("%H:%M:%S"),
             "Exit": t.exit_time.strftime("%H:%M:%S"),
             "Exit Reason": _exit_reason_label(t.exit_reason),
-            "P&L": _fmt_pnl(t.realized_pnl),
+            "Gross P&L": _fmt_pnl(t.realized_pnl),
+            "Cost": f"\u20b9{t.execution_cost:,.0f}",
+            "Net P&L": _fmt_pnl(t.net_pnl),
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

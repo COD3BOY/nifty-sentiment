@@ -30,17 +30,17 @@ class PositionLeg(BaseModel):
     strike: float
     option_type: str  # "CE" or "PE"
     lots: int = 1
+    lot_size: int = 25
     entry_ltp: float
     current_ltp: float
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def unrealized_pnl(self) -> float:
-        lot_size = 25  # NIFTY lot size
         if self.action == "BUY":
-            return (self.current_ltp - self.entry_ltp) * self.lots * lot_size
+            return (self.current_ltp - self.entry_ltp) * self.lots * self.lot_size
         else:  # SELL
-            return (self.entry_ltp - self.current_ltp) * self.lots * lot_size
+            return (self.entry_ltp - self.current_ltp) * self.lots * self.lot_size
 
 
 class PaperPosition(BaseModel):
@@ -53,12 +53,14 @@ class PaperPosition(BaseModel):
     confidence: str
     score: float
     legs: list[PositionLeg]
+    lots: int = 1
     entry_time: datetime = Field(default_factory=datetime.utcnow)
     exit_time: datetime | None = None
     status: PositionStatus = PositionStatus.OPEN
     net_premium: float = 0.0
     stop_loss_amount: float = 0.0
     profit_target_amount: float = 0.0
+    execution_cost: float = 0.0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -76,10 +78,13 @@ class TradeRecord(BaseModel):
     confidence: str
     score: float
     legs_summary: list[dict]
+    lots: int = 1
     entry_time: datetime
     exit_time: datetime
     exit_reason: PositionStatus
     realized_pnl: float
+    execution_cost: float = 0.0
+    net_pnl: float = 0.0
     net_premium: float
     stop_loss_amount: float
     profit_target_amount: float
@@ -92,13 +97,19 @@ class PaperTradingState(BaseModel):
     current_position: PaperPosition | None = None
     trade_log: list[TradeRecord] = Field(default_factory=list)
     total_realized_pnl: float = 0.0
+    total_execution_costs: float = 0.0
     is_auto_trading: bool = True
     last_open_refresh_ts: float = 0.0  # prevents re-open on same refresh cycle
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def net_realized_pnl(self) -> float:
+        return self.total_realized_pnl - self.total_execution_costs
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def capital_remaining(self) -> float:
-        return self.initial_capital + self.total_realized_pnl
+        return self.initial_capital + self.total_realized_pnl - self.total_execution_costs
 
     @computed_field  # type: ignore[prop-decorator]
     @property

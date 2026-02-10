@@ -136,12 +136,29 @@ paper_trading:
   lot_size: 25
   auto_execute: true
   min_score_to_trade: 30
+  max_lots: 4
+  capital_utilization: 0.70
   stop_loss:
-    credit_fallback_multiplier: 1.5
-    debit_premium_pct: 0.50
+    credit_fallback_multiplier: 1.0
+    debit_premium_pct: 0.40
   profit_target:
-    credit_pct: 0.50
-    debit_pct: 1.00
+    credit_pct: 0.30
+    debit_pct: 0.50
+  execution_cost:
+    brokerage_per_order: 20
+    stt_sell_pct: 0.0015
+  margin_estimates:
+    short_straddle: 100000
+    short_strangle: 100000
+    bull_put_spread: 30000
+    bear_call_spread: 30000
+    bull_call_spread: 0
+    bear_put_spread: 0
+    iron_condor: 60000
+    long_call_ce: 0
+    long_put_pe: 0
+    long_straddle: 0
+    long_strangle: 0
 
 dashboard:
   title: "NIFTY Sentiment Dashboard"

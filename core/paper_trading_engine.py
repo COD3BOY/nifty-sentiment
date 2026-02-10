@@ -7,6 +7,7 @@ Designed for future reuse in algorithmic trading.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime
 
@@ -71,14 +72,20 @@ def classify_strategy(name: str | StrategyName) -> StrategyType:
 # Premium & risk computation
 # ---------------------------------------------------------------------------
 
-def compute_net_premium(suggestion: TradeSuggestion, lot_size: int) -> float:
-    """Compute net premium from legs. SELL adds, BUY subtracts."""
+def compute_net_premium(
+    suggestion: TradeSuggestion, lot_size: int, lots: int = 1,
+) -> float:
+    """Compute net premium from legs. SELL adds, BUY subtracts.
+
+    Per-leg lots from the suggestion are ignored; we use the `lots` param
+    (number of lots computed by position sizing) applied uniformly.
+    """
     total = 0.0
     for leg in suggestion.legs:
         if leg.action == "SELL":
-            total += leg.ltp * leg.lots * lot_size
+            total += leg.ltp * lots * lot_size
         else:
-            total -= leg.ltp * leg.lots * lot_size
+            total -= leg.ltp * lots * lot_size
     return total
 
 
@@ -94,49 +101,133 @@ def _parse_currency(text: str) -> float | None:
 
 
 def compute_risk_params(
-    suggestion: TradeSuggestion, lot_size: int,
+    suggestion: TradeSuggestion, lot_size: int, lots: int = 1,
 ) -> tuple[float, float, float]:
     """Compute (net_premium, stop_loss_amount, profit_target_amount).
 
-    Credit strategies: SL = parsed max_loss (or 1.5x premium fallback), PT = 50% of premium
-    Debit strategies: SL = 50% of premium paid, PT = 100% of premium paid
+    Credit strategies: SL = parsed max_loss scaled by lots (or fallback multiplier), PT = credit_pct of premium
+    Debit strategies: SL = debit_premium_pct of premium paid, PT = debit_pct of premium paid
     """
     cfg = _pt_cfg()
-    net_premium = compute_net_premium(suggestion, lot_size)
+    net_premium = compute_net_premium(suggestion, lot_size, lots)
     strategy_type = classify_strategy(suggestion.strategy)
 
     if strategy_type == StrategyType.CREDIT:
         # Stop loss
         parsed_loss = _parse_currency(suggestion.max_loss)
-        credit_fallback = cfg.get("stop_loss", {}).get("credit_fallback_multiplier", 1.5)
+        credit_fallback = cfg.get("stop_loss", {}).get("credit_fallback_multiplier", 1.0)
         if parsed_loss and parsed_loss > 0:
-            sl = parsed_loss
+            # parsed max_loss is for 1 lot — scale by lots
+            sl = parsed_loss * lots
         else:
             sl = abs(net_premium) * credit_fallback
 
-        # Profit target: take 50% of premium received
-        credit_pt_pct = cfg.get("profit_target", {}).get("credit_pct", 0.50)
+        # Profit target
+        credit_pt_pct = cfg.get("profit_target", {}).get("credit_pct", 0.30)
         pt = abs(net_premium) * credit_pt_pct
     else:
         # Debit: premium paid is negative net_premium
         premium_paid = abs(net_premium)
-        debit_sl_pct = cfg.get("stop_loss", {}).get("debit_premium_pct", 0.50)
+        debit_sl_pct = cfg.get("stop_loss", {}).get("debit_premium_pct", 0.40)
         sl = premium_paid * debit_sl_pct
 
-        debit_pt_pct = cfg.get("profit_target", {}).get("debit_pct", 1.00)
+        debit_pt_pct = cfg.get("profit_target", {}).get("debit_pct", 0.50)
         pt = premium_paid * debit_pt_pct
 
     return net_premium, sl, pt
 
 
 # ---------------------------------------------------------------------------
+# Position sizing & execution costs
+# ---------------------------------------------------------------------------
+
+def _strategy_margin_key(strategy: str | StrategyName) -> str:
+    """Map a StrategyName to the margin_estimates config key."""
+    if isinstance(strategy, StrategyName):
+        strategy = strategy.value
+    return strategy.lower().replace(" ", "_")
+
+
+def compute_lots(
+    strategy: str | StrategyName,
+    available_capital: float,
+    lot_size: int,
+    suggestion: TradeSuggestion,
+) -> int:
+    """Compute how many lots to trade based on capital and margin requirements.
+
+    For credit/margin strategies: uses margin_estimates from config.
+    For debit strategies (margin=0 in config): uses premium paid per lot as margin.
+    Clamps to [1, max_lots].
+    """
+    cfg = _pt_cfg()
+    max_lots = cfg.get("max_lots", 4)
+    utilization = cfg.get("capital_utilization", 0.70)
+    margin_estimates = cfg.get("margin_estimates", {})
+
+    key = _strategy_margin_key(strategy)
+    margin_per_lot = margin_estimates.get(key, 0)
+
+    if margin_per_lot == 0:
+        # Debit strategy — use premium paid per lot as "margin"
+        per_lot_premium = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY") * lot_size
+        margin_per_lot = per_lot_premium if per_lot_premium > 0 else 1  # safety
+
+    usable_capital = available_capital * utilization
+    lots = max(1, min(max_lots, math.floor(usable_capital / margin_per_lot)))
+    return lots
+
+
+def compute_execution_cost(
+    num_legs: int,
+    suggestion: TradeSuggestion,
+    lot_size: int,
+    lots: int,
+) -> float:
+    """Compute estimated execution cost for a round-trip trade.
+
+    Cost = (num_legs × 2 orders × brokerage) + (STT on sell-side premium).
+    """
+    cfg = _pt_cfg()
+    cost_cfg = cfg.get("execution_cost", {})
+    brokerage_per_order = cost_cfg.get("brokerage_per_order", 20)
+    stt_sell_pct = cost_cfg.get("stt_sell_pct", 0.0015)
+
+    # Brokerage: each leg has an entry and exit order
+    brokerage = num_legs * 2 * brokerage_per_order
+
+    # STT: charged on sell-side premium (both SELL legs at entry and BUY legs at exit)
+    sell_premium = sum(
+        leg.ltp * lots * lot_size
+        for leg in suggestion.legs
+        if leg.action == "SELL"
+    )
+    stt = sell_premium * stt_sell_pct
+
+    return brokerage + stt
+
+
+# ---------------------------------------------------------------------------
 # Position lifecycle
 # ---------------------------------------------------------------------------
 
-def open_position(suggestion: TradeSuggestion, lot_size: int) -> PaperPosition:
+def open_position(
+    suggestion: TradeSuggestion, lot_size: int, available_capital: float | None = None,
+) -> PaperPosition:
     """Create a new paper position from a trade suggestion."""
     strategy_type = classify_strategy(suggestion.strategy)
-    net_premium, sl, pt = compute_risk_params(suggestion, lot_size)
+
+    # Position sizing
+    if available_capital is not None:
+        lots = compute_lots(suggestion.strategy, available_capital, lot_size, suggestion)
+    else:
+        lots = 1
+
+    net_premium, sl, pt = compute_risk_params(suggestion, lot_size, lots)
+
+    # Execution cost
+    num_legs = len(suggestion.legs)
+    exec_cost = compute_execution_cost(num_legs, suggestion, lot_size, lots)
 
     legs = [
         PositionLeg(
@@ -144,7 +235,8 @@ def open_position(suggestion: TradeSuggestion, lot_size: int) -> PaperPosition:
             instrument=leg.instrument,
             strike=leg.strike,
             option_type=leg.option_type,
-            lots=leg.lots,
+            lots=lots,
+            lot_size=lot_size,
             entry_ltp=leg.ltp,
             current_ltp=leg.ltp,
         )
@@ -158,9 +250,11 @@ def open_position(suggestion: TradeSuggestion, lot_size: int) -> PaperPosition:
         confidence=suggestion.confidence,
         score=suggestion.score,
         legs=legs,
+        lots=lots,
         net_premium=net_premium,
         stop_loss_amount=sl,
         profit_target_amount=pt,
+        execution_cost=exec_cost,
     )
 
 
@@ -217,6 +311,7 @@ def close_position(
         update={"status": reason, "exit_time": now},
     )
 
+    gross_pnl = position.total_unrealized_pnl
     record = TradeRecord(
         id=position.id,
         strategy=position.strategy,
@@ -234,10 +329,13 @@ def close_position(
             }
             for leg in position.legs
         ],
+        lots=position.lots,
         entry_time=position.entry_time,
         exit_time=now,
         exit_reason=reason,
-        realized_pnl=position.total_unrealized_pnl,
+        realized_pnl=gross_pnl,
+        execution_cost=position.execution_cost,
+        net_pnl=gross_pnl - position.execution_cost,
         net_premium=position.net_premium,
         stop_loss_amount=position.stop_loss_amount,
         profit_target_amount=position.profit_target_amount,
@@ -285,14 +383,16 @@ def evaluate_and_manage(
         if exit_reason:
             closed_pos, record = close_position(position, exit_reason)
             logger.info(
-                "Paper trade closed: %s | reason=%s | pnl=%.2f",
+                "Paper trade closed: %s | reason=%s | pnl=%.2f | cost=%.2f | net=%.2f",
                 record.strategy, exit_reason.value, record.realized_pnl,
+                record.execution_cost, record.net_pnl,
             )
             return state.model_copy(
                 update={
                     "current_position": None,
                     "trade_log": state.trade_log + [record],
                     "total_realized_pnl": state.total_realized_pnl + record.realized_pnl,
+                    "total_execution_costs": state.total_execution_costs + record.execution_cost,
                     "last_open_refresh_ts": refresh_ts,
                 },
             )
@@ -311,11 +411,12 @@ def evaluate_and_manage(
         # Pick the best suggestion that meets the minimum score
         for suggestion in suggestions:
             if suggestion.score >= min_score:
-                position = open_position(suggestion, lot_size)
+                position = open_position(suggestion, lot_size, state.capital_remaining)
                 logger.info(
-                    "Paper trade opened: %s | bias=%s | score=%.1f | premium=%.2f",
+                    "Paper trade opened: %s | bias=%s | score=%.1f | lots=%d | premium=%.2f | cost=%.2f",
                     position.strategy, position.direction_bias,
-                    position.score, position.net_premium,
+                    position.score, position.lots, position.net_premium,
+                    position.execution_cost,
                 )
                 return state.model_copy(
                     update={
