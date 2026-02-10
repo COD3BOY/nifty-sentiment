@@ -150,6 +150,22 @@ class OptionsDeskEngine:
         bb_std = ind_cfg.get("bb_std", 2.0)
         bb_upper, bb_mid, bb_lower = compute_bollinger_bands(close, period=bb_period, std_dev=bb_std)
 
+        # Data staleness: minutes since the last candle timestamp
+        last_candle_ts = df.index[-1]
+        if last_candle_ts.tzinfo is None:
+            # yfinance often returns tz-aware (Asia/Kolkata); handle both
+            from datetime import datetime, timezone, timedelta
+            _IST = timezone(timedelta(hours=5, minutes=30))
+            now = datetime.now(_IST)
+            # Assume candle is IST if tz-naive
+            staleness_min = (now.replace(tzinfo=None) - last_candle_ts.to_pydatetime().replace(tzinfo=None)).total_seconds() / 60
+        else:
+            from datetime import datetime, timezone, timedelta
+            _IST = timezone(timedelta(hours=5, minutes=30))
+            now = datetime.now(_IST)
+            staleness_min = (now - last_candle_ts.to_pydatetime().astimezone(_IST)).total_seconds() / 60
+        staleness_min = max(0.0, staleness_min)
+
         return TechnicalIndicators(
             spot=float(last_close),
             spot_change=float(spot_change),
@@ -164,6 +180,7 @@ class OptionsDeskEngine:
             bb_upper=float(bb_upper.iloc[-1]) if pd.notna(bb_upper.iloc[-1]) else float(last_close),
             bb_middle=float(bb_mid.iloc[-1]) if pd.notna(bb_mid.iloc[-1]) else float(last_close),
             bb_lower=float(bb_lower.iloc[-1]) if pd.notna(bb_lower.iloc[-1]) else float(last_close),
+            data_staleness_minutes=round(staleness_min, 1),
         )
 
     def _build_signals(

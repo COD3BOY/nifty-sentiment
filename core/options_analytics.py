@@ -4,9 +4,12 @@ from core.options_models import OptionChainData, OptionsAnalytics
 
 
 def compute_pcr(chain: OptionChainData) -> float:
-    """Total Put OI / Total Call OI."""
+    """Total Put OI / Total Call OI.
+
+    Returns -1.0 sentinel when CE OI is 0 (data error / unavailable).
+    """
     if chain.total_ce_oi == 0:
-        return 0.0
+        return -1.0
     return chain.total_pe_oi / chain.total_ce_oi
 
 
@@ -37,24 +40,43 @@ def compute_max_pain(chain: OptionChainData) -> float:
 
 def compute_oi_levels(
     chain: OptionChainData,
+    spot: float = 0.0,
+    proximity_strikes: int = 10,
 ) -> tuple[float, float, float, float]:
     """Find highest Put OI (support) and highest Call OI (resistance).
+
+    When *spot* is provided, only considers strikes within ±proximity_strikes
+    of ATM and ensures support < spot and resistance > spot.
 
     Returns (support_strike, support_oi, resistance_strike, resistance_oi).
     """
     if not chain.strikes:
         return 0.0, 0.0, 0.0, 0.0
 
+    sorted_strikes = sorted(chain.strikes, key=lambda s: s.strike_price)
+
+    # Filter to strikes near spot if spot is provided
+    if spot > 0:
+        atm_strike = min(sorted_strikes, key=lambda s: abs(s.strike_price - spot)).strike_price
+        atm_idx = next(i for i, s in enumerate(sorted_strikes) if s.strike_price == atm_strike)
+        lo = max(0, atm_idx - proximity_strikes)
+        hi = min(len(sorted_strikes), atm_idx + proximity_strikes + 1)
+        nearby = sorted_strikes[lo:hi]
+    else:
+        nearby = sorted_strikes
+
     max_pe_oi = 0.0
     support_strike = 0.0
     max_ce_oi = 0.0
     resistance_strike = 0.0
 
-    for s in chain.strikes:
-        if s.pe_oi > max_pe_oi:
+    for s in nearby:
+        # Support: highest PE OI below spot (or all if no spot)
+        if (spot <= 0 or s.strike_price < spot) and s.pe_oi > max_pe_oi:
             max_pe_oi = s.pe_oi
             support_strike = s.strike_price
-        if s.ce_oi > max_ce_oi:
+        # Resistance: highest CE OI above spot (or all if no spot)
+        if (spot <= 0 or s.strike_price > spot) and s.ce_oi > max_ce_oi:
             max_ce_oi = s.ce_oi
             resistance_strike = s.strike_price
 
@@ -124,7 +146,9 @@ def build_analytics(chain: OptionChainData) -> OptionsAnalytics:
     """Run all option chain analytics and return an OptionsAnalytics model."""
     pcr = compute_pcr(chain)
 
-    if pcr > 1.2:
+    if pcr < 0:
+        pcr_label = "Data Error"
+    elif pcr > 1.2:
         pcr_label = "Bullish (heavy put writing)"
     elif pcr > 0.8:
         pcr_label = "Neutral"
@@ -133,7 +157,9 @@ def build_analytics(chain: OptionChainData) -> OptionsAnalytics:
     else:
         pcr_label = "Strongly Bearish"
 
-    support_strike, support_oi, resistance_strike, resistance_oi = compute_oi_levels(chain)
+    support_strike, support_oi, resistance_strike, resistance_oi = compute_oi_levels(
+        chain, spot=chain.underlying_value,
+    )
 
     return OptionsAnalytics(
         pcr=round(pcr, 3),

@@ -100,10 +100,11 @@ class TechnicalIndicators(BaseModel):
     ema_50: float = 0.0
     rsi: float = 0.0
     supertrend: float = 0.0
-    supertrend_direction: int = 1  # 1 = bullish, -1 = bearish
+    supertrend_direction: int = 0  # 1 = bullish, -1 = bearish, 0 = unknown
     bb_upper: float = 0.0
     bb_middle: float = 0.0
     bb_lower: float = 0.0
+    data_staleness_minutes: float = 0.0  # minutes since last candle timestamp
 
 
 class TradeLeg(BaseModel):

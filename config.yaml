@@ -139,8 +139,15 @@ paper_trading:
   trade_cooldown_seconds: 60
   max_lots: 4
   capital_utilization: 0.70
+  daily_loss_limit_pct: 3.0
+  debit_max_hold_minutes: 120
+  eod_close_time: "15:20"
+  max_open_positions: 3
+  max_positions_per_direction: 2
+  max_staleness_minutes: 20
+  slippage_per_leg: 3.0
   stop_loss:
-    credit_fallback_multiplier: 1.0
+    credit_fallback_multiplier: 2.0
     debit_premium_pct: 0.40
   profit_target:
     credit_pct: 0.30

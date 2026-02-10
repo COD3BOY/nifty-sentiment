@@ -6,6 +6,7 @@ import logging
 from collections import Counter
 
 from core.config import load_config
+from core.event_calendar import is_event_day
 from core.options_models import (
     OptionChainData,
     OptionsAnalytics,
@@ -49,6 +50,19 @@ def _min_score() -> float:
 def _p(overrides: dict[str, float], name: str, default: float) -> float:
     """Look up a parameter value from overrides, falling back to *default*."""
     return overrides.get(name, default)
+
+
+# ---------------------------------------------------------------------------
+# Confidence normalization
+# ---------------------------------------------------------------------------
+
+def _confidence_from_score(score: float) -> str:
+    """Uniform confidence mapping across all strategies."""
+    if score >= 55:
+        return "High"
+    if score >= 35:
+        return "Medium"
+    return "Low"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +114,38 @@ def _fmt_currency(amount: float) -> str:
     return f"\u20b9{amount:,.0f}"
 
 
+def _bid_ask_penalty(
+    chain: OptionChainData,
+    strikes: list[tuple[float, str]],
+    threshold_pct: float = 5.0,
+) -> tuple[float, str | None]:
+    """Check bid-ask spread for selected strikes.
+
+    Returns (penalty, reason). Penalty is -10 per wide-spread strike.
+    strikes: list of (strike_price, "CE"/"PE") tuples.
+    """
+    lookup: dict[float, StrikeData] = {s.strike_price: s for s in chain.strikes}
+    penalty = 0.0
+    wide_strikes: list[str] = []
+    for strike_price, opt_type in strikes:
+        sd = lookup.get(strike_price)
+        if not sd:
+            continue
+        if opt_type == "CE":
+            bid, ask, ltp = sd.ce_bid, sd.ce_ask, sd.ce_ltp
+        else:
+            bid, ask, ltp = sd.pe_bid, sd.pe_ask, sd.pe_ltp
+        if ltp > 0 and bid > 0 and ask > 0:
+            spread_pct = ((ask - bid) / ltp) * 100
+            if spread_pct > threshold_pct:
+                penalty -= 10
+                wide_strikes.append(f"{int(strike_price)} {opt_type} ({spread_pct:.0f}%)")
+    reason = None
+    if wide_strikes:
+        reason = f"Wide bid-ask spread: {', '.join(wide_strikes)}"
+    return penalty, reason
+
+
 def _bb_width_pct(tech: TechnicalIndicators) -> float:
     if tech.bb_middle > 0:
         width = ((tech.bb_upper - tech.bb_lower) / tech.bb_middle) * 100
@@ -117,7 +163,19 @@ def _ema_bearish(tech: TechnicalIndicators) -> bool:
     return tech.ema_9 < tech.ema_21 < tech.ema_50
 
 
+def _trend_confirmed_bullish(tech: TechnicalIndicators) -> bool:
+    """EMA + Supertrend both confirm bullish trend (for RSI penalty exemption)."""
+    return _ema_bullish(tech) and tech.supertrend_direction == 1
+
+
+def _trend_confirmed_bearish(tech: TechnicalIndicators) -> bool:
+    """EMA + Supertrend both confirm bearish trend (for RSI penalty exemption)."""
+    return _ema_bearish(tech) and tech.supertrend_direction == -1
+
+
 def _all_bullish(tech: TechnicalIndicators) -> bool:
+    if tech.supertrend_direction == 0:
+        return False  # unknown supertrend — can't confirm full alignment
     return (
         _ema_bullish(tech)
         and tech.supertrend_direction == 1
@@ -126,6 +184,8 @@ def _all_bullish(tech: TechnicalIndicators) -> bool:
 
 
 def _all_bearish(tech: TechnicalIndicators) -> bool:
+    if tech.supertrend_direction == 0:
+        return False  # unknown supertrend — can't confirm full alignment
     return (
         _ema_bearish(tech)
         and tech.supertrend_direction == -1
@@ -143,6 +203,12 @@ def _eval_short_straddle(
     chain: OptionChainData,
     overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
+    # Block on high-impact event days — vol expansion expected
+    is_event, event_label = is_event_day()
+    if is_event:
+        logger.info("Short Straddle blocked — event day: %s", event_label)
+        return None
+
     atm = _get_atm_strike_data(chain, analytics.atm_strike)
     if not atm or atm.ce_ltp <= 0 or atm.pe_ltp <= 0:
         return None
@@ -179,27 +245,28 @@ def _eval_short_straddle(
     else:
         score -= 15
 
-    # Spot near max pain
+    # Spot near max pain (reduced weight — max pain is EOD concept, not intraday)
     if analytics.max_pain > 0:
         dist_pct = abs(tech.spot - analytics.max_pain) / analytics.max_pain * 100
         mp_close = _p(ov, "max_pain_close_pct", 0.3)
         mp_near = _p(ov, "max_pain_near_pct", 0.8)
         if dist_pct < mp_close:
-            score += 20
+            score += 10
             reasons.append(f"Spot within {mp_close}% of Max Pain ({analytics.max_pain:.0f})")
         elif dist_pct < mp_near:
-            score += 10
+            score += 5
         else:
-            score -= 10
+            score -= 5
 
     # PCR near neutral
     pcr_lo = _p(ov, "pcr_neutral_low", 0.8)
     pcr_hi = _p(ov, "pcr_neutral_high", 1.2)
-    if pcr_lo <= analytics.pcr <= pcr_hi:
-        score += 15
-        reasons.append(f"PCR {analytics.pcr:.2f} — balanced options flow")
-    else:
-        score -= 5
+    if analytics.pcr >= 0:
+        if pcr_lo <= analytics.pcr <= pcr_hi:
+            score += 15
+            reasons.append(f"PCR {analytics.pcr:.2f} — balanced options flow")
+        else:
+            score -= 5
 
     # Tight BB = range-bound
     bw = _bb_width_pct(tech)
@@ -225,7 +292,7 @@ def _eval_short_straddle(
                      strike=atm.strike_price, option_type="PE", ltp=atm.pe_ltp),
         ],
         direction_bias="Neutral",
-        confidence="High" if score >= 60 else "Medium" if score >= 35 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — neutral conditions confirmed" if score >= 50 else "Wait for RSI to settle in 45-55 range",
         technicals_to_check=checks,
@@ -244,6 +311,12 @@ def _eval_short_strangle(
     chain: OptionChainData,
     overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
+    # Block on high-impact event days — vol expansion expected
+    is_event, event_label = is_event_day()
+    if is_event:
+        logger.info("Short Strangle blocked — event day: %s", event_label)
+        return None
+
     offset = _otm_offset()
     otm_ce = _get_strike_by_offset(chain, analytics.atm_strike, offset, "CE")
     otm_pe = _get_strike_by_offset(chain, analytics.atm_strike, offset, "PE")
@@ -293,6 +366,14 @@ def _eval_short_strangle(
     checks.append(f"Resistance holds at {analytics.resistance_strike:.0f}")
     checks.append("No breakout signals (Supertrend stable)")
 
+    # Bid-ask liquidity check
+    ba_pen, ba_reason = _bid_ask_penalty(chain, [
+        (otm_ce.strike_price, "CE"), (otm_pe.strike_price, "PE"),
+    ])
+    score += ba_pen
+    if ba_reason:
+        reasons.append(ba_reason)
+
     if score < 0:
         return None
 
@@ -307,7 +388,7 @@ def _eval_short_strangle(
                      strike=otm_pe.strike_price, option_type="PE", ltp=otm_pe.pe_ltp),
         ],
         direction_bias="Neutral",
-        confidence="High" if score >= 55 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — range-bound setup confirmed" if score >= 45 else "Wait for spot to return to mid-range",
         technicals_to_check=checks,
@@ -335,6 +416,12 @@ def _eval_long_straddle(
     reasons: list[str] = []
     checks: list[str] = []
 
+    # Event day boost — vol expansion expected
+    is_event, event_label = is_event_day()
+    if is_event:
+        score += 15
+        reasons.append(f"Event day ({event_label}) — volatility expansion likely")
+
     bw = _bb_width_pct(tech)
     bb_squeeze = _p(ov, "bb_width_squeeze_pct", 0.8)
     bb_mod = _p(ov, "bb_width_moderate_pct", 1.0)
@@ -349,13 +436,18 @@ def _eval_long_straddle(
         score += 20
         reasons.append(f"IV skew {analytics.iv_skew:+.1f} — significant imbalance, move expected")
 
-    iv_elevated = _p(ov, "iv_elevated_threshold", 18)
+    iv_cheap = _p(ov, "iv_cheap_threshold", 14)
+    iv_mod = _p(ov, "iv_moderate_threshold", 18)
     if analytics.atm_iv > 0:
-        if analytics.atm_iv > iv_elevated:
+        if analytics.atm_iv < iv_cheap:
+            score += 20
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — cheap premiums, ideal for buying straddle")
+        elif analytics.atm_iv < iv_mod:
             score += 10
-            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — elevated, implies expected movement")
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — moderate, acceptable entry")
         else:
             score -= 10
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — expensive, poor entry for long straddle")
     else:
         score -= 5
         reasons.append("IV data unavailable — cannot assess volatility")
@@ -386,7 +478,7 @@ def _eval_long_straddle(
                      strike=atm.strike_price, option_type="PE", ltp=atm.pe_ltp),
         ],
         direction_bias="Neutral",
-        confidence="High" if score >= 50 else "Medium" if score >= 25 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — squeeze detected, breakout imminent" if bw < bb_squeeze else "Enter before major event/news",
         technicals_to_check=checks,
@@ -442,6 +534,14 @@ def _eval_long_strangle(
     checks.append("Volume surge confirmation needed for breakout")
     checks.append(f"BB width currently {bw:.1f}%")
 
+    # Bid-ask liquidity check
+    ba_pen, ba_reason = _bid_ask_penalty(chain, [
+        (otm_ce.strike_price, "CE"), (otm_pe.strike_price, "PE"),
+    ])
+    score += ba_pen
+    if ba_reason:
+        reasons.append(ba_reason)
+
     if score < 0:
         return None
 
@@ -456,7 +556,7 @@ def _eval_long_strangle(
                      strike=otm_pe.strike_price, option_type="PE", ltp=otm_pe.pe_ltp),
         ],
         direction_bias="Neutral",
-        confidence="High" if score >= 45 else "Medium" if score >= 25 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — cheap OTM premiums with squeeze" if score >= 40 else "Wait for IV to drop further",
         technicals_to_check=checks,
@@ -502,11 +602,12 @@ def _eval_bull_put_spread(
 
     pcr_bull = _p(ov, "pcr_bullish_threshold", 1.2)
     pcr_mod = _p(ov, "pcr_moderate_threshold", 1.0)
-    if analytics.pcr > pcr_bull:
-        score += 15
-        reasons.append(f"PCR {analytics.pcr:.2f} — heavy put writing (bullish)")
-    elif analytics.pcr > pcr_mod:
-        score += 5
+    if analytics.pcr >= 0:
+        if analytics.pcr > pcr_bull:
+            score += 15
+            reasons.append(f"PCR {analytics.pcr:.2f} — heavy put writing (bullish)")
+        elif analytics.pcr > pcr_mod:
+            score += 5
 
     rsi_ob = _p(ov, "rsi_overbought_threshold", 70)
     if tech.rsi < rsi_ob:
@@ -535,7 +636,7 @@ def _eval_bull_put_spread(
                      strike=buy_pe.strike_price, option_type="PE", ltp=buy_pe.pe_ltp),
         ],
         direction_bias="Bullish",
-        confidence="High" if score >= 50 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — bullish trend confirmed" if score >= 45 else "Wait for pullback to VWAP",
         technicals_to_check=checks,
@@ -579,11 +680,12 @@ def _eval_bear_call_spread(
 
     pcr_bear = _p(ov, "pcr_bearish_threshold", 0.7)
     pcr_mod = _p(ov, "pcr_moderate_threshold", 1.0)
-    if analytics.pcr < pcr_bear:
-        score += 15
-        reasons.append(f"PCR {analytics.pcr:.2f} — low put writing (bearish)")
-    elif analytics.pcr < pcr_mod:
-        score += 5
+    if analytics.pcr >= 0:
+        if analytics.pcr < pcr_bear:
+            score += 15
+            reasons.append(f"PCR {analytics.pcr:.2f} — low put writing (bearish)")
+        elif analytics.pcr < pcr_mod:
+            score += 5
 
     rsi_os = _p(ov, "rsi_oversold_threshold", 30)
     if tech.rsi > rsi_os:
@@ -612,7 +714,7 @@ def _eval_bear_call_spread(
                      strike=buy_ce.strike_price, option_type="CE", ltp=buy_ce.ce_ltp),
         ],
         direction_bias="Bearish",
-        confidence="High" if score >= 50 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — bearish trend confirmed" if score >= 45 else "Wait for bounce to VWAP",
         technicals_to_check=checks,
@@ -660,7 +762,10 @@ def _eval_bull_call_spread(
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — bullish momentum, not overbought")
     elif tech.rsi >= rsi_ob:
-        score -= 10
+        if _trend_confirmed_bullish(tech):
+            reasons.append(f"RSI {tech.rsi:.1f} overbought but trend confirmed — no penalty")
+        else:
+            score -= 10
 
     checks.append("EMA bullish alignment intact")
     checks.append(f"RSI below {rsi_ob:.0f} (currently {tech.rsi:.1f})")
@@ -682,7 +787,7 @@ def _eval_bull_call_spread(
                      strike=sell_ce.strike_price, option_type="CE", ltp=sell_ce.ce_ltp),
         ],
         direction_bias="Bullish",
-        confidence="High" if score >= 50 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — bullish momentum confirmed" if score >= 45 else "Wait for pullback to EMA 9",
         technicals_to_check=checks,
@@ -731,7 +836,10 @@ def _eval_bear_put_spread(
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — bearish momentum, not oversold")
     elif tech.rsi <= rsi_os:
-        score -= 10
+        if _trend_confirmed_bearish(tech):
+            reasons.append(f"RSI {tech.rsi:.1f} oversold but trend confirmed — no penalty")
+        else:
+            score -= 10
 
     checks.append("EMA bearish alignment intact")
     checks.append(f"RSI above {rsi_os:.0f} (currently {tech.rsi:.1f})")
@@ -753,7 +861,7 @@ def _eval_bear_put_spread(
                      strike=sell_pe.strike_price, option_type="PE", ltp=sell_pe.pe_ltp),
         ],
         direction_bias="Bearish",
-        confidence="High" if score >= 50 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — bearish momentum confirmed" if score >= 45 else "Wait for bounce to EMA 9",
         technicals_to_check=checks,
@@ -815,7 +923,7 @@ def _eval_iron_condor(
 
     pcr_bal_lo = _p(ov, "pcr_balanced_low", 0.85)
     pcr_bal_hi = _p(ov, "pcr_balanced_high", 1.15)
-    if pcr_bal_lo <= analytics.pcr <= pcr_bal_hi:
+    if analytics.pcr >= 0 and pcr_bal_lo <= analytics.pcr <= pcr_bal_hi:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — balanced")
 
@@ -826,6 +934,15 @@ def _eval_iron_condor(
     checks.append(f"Range {int(sell_pe.strike_price)}-{int(sell_ce.strike_price)} holds")
     checks.append("No breakout triggers (news/events)")
     checks.append(f"PCR stays near {analytics.pcr:.2f}")
+
+    # Bid-ask liquidity check (4 legs)
+    ba_pen, ba_reason = _bid_ask_penalty(chain, [
+        (sell_ce.strike_price, "CE"), (buy_ce.strike_price, "CE"),
+        (sell_pe.strike_price, "PE"), (buy_pe.strike_price, "PE"),
+    ])
+    score += ba_pen
+    if ba_reason:
+        reasons.append(ba_reason)
 
     if score < 0:
         return None
@@ -852,7 +969,7 @@ def _eval_iron_condor(
                      strike=buy_pe.strike_price, option_type="PE", ltp=buy_pe.pe_ltp),
         ],
         direction_bias="Neutral",
-        confidence="High" if score >= 55 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — iron condor conditions ideal" if score >= 50 else "Wait for RSI to settle near 50",
         technicals_to_check=checks,
@@ -899,10 +1016,13 @@ def _eval_long_ce(
         score += 10
         reasons.append(f"RSI {tech.rsi:.1f} — room to run higher")
     else:
-        score -= 15
+        if _trend_confirmed_bullish(tech):
+            reasons.append(f"RSI {tech.rsi:.1f} overbought but trend confirmed — no penalty")
+        else:
+            score -= 15
 
     pcr_bull = _p(ov, "pcr_bullish_threshold", 1.2)
-    if analytics.pcr > pcr_bull:
+    if analytics.pcr >= 0 and analytics.pcr > pcr_bull:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — bullish options flow")
 
@@ -922,7 +1042,7 @@ def _eval_long_ce(
                      strike=atm.strike_price, option_type="CE", ltp=atm.ce_ltp),
         ],
         direction_bias="Bullish",
-        confidence="High" if score >= 50 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — strong bullish alignment" if _all_bullish(tech) else "Wait for all signals to align bullish",
         technicals_to_check=checks,
@@ -969,10 +1089,13 @@ def _eval_long_pe(
         score += 10
         reasons.append(f"RSI {tech.rsi:.1f} — room to fall further")
     else:
-        score -= 15
+        if _trend_confirmed_bearish(tech):
+            reasons.append(f"RSI {tech.rsi:.1f} oversold but trend confirmed — no penalty")
+        else:
+            score -= 15
 
     pcr_bear = _p(ov, "pcr_bearish_threshold", 0.7)
-    if analytics.pcr < pcr_bear:
+    if analytics.pcr >= 0 and analytics.pcr < pcr_bear:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — bearish options flow")
 
@@ -992,7 +1115,7 @@ def _eval_long_pe(
                      strike=atm.strike_price, option_type="PE", ltp=atm.pe_ltp),
         ],
         direction_bias="Bearish",
-        confidence="High" if score >= 50 else "Medium" if score >= 30 else "Low",
+        confidence=_confidence_from_score(score),
         score=score,
         entry_timing="Enter now — strong bearish alignment" if _all_bearish(tech) else "Wait for all signals to align bearish",
         technicals_to_check=checks,

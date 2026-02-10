@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import time as _time
+from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -194,8 +195,10 @@ def compute_lots(
         margin_per_lot = margin_estimates.get(key, 0)
 
     if margin_per_lot == 0:
-        # Debit strategy — use premium paid per lot as "margin"
-        per_lot_premium = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY") * lot_size
+        # Debit strategy — use net premium per lot as "margin"
+        per_lot_premium = abs(
+            sum(leg.ltp * (1 if leg.action == "BUY" else -1) for leg in suggestion.legs)
+        ) * lot_size
         margin_per_lot = per_lot_premium if per_lot_premium > 0 else 1  # safety
 
     usable_capital = available_capital * utilization
@@ -307,6 +310,9 @@ def open_position(
     num_legs = len(suggestion.legs)
     exec_cost = compute_execution_cost(num_legs, suggestion, lot_size, lots, expiry=expiry)
 
+    # Slippage model: BUY legs pay more, SELL legs receive less
+    slippage = _pt_cfg().get("slippage_per_leg", 0.0)
+
     legs = [
         PositionLeg(
             action=leg.action,
@@ -315,8 +321,8 @@ def open_position(
             option_type=leg.option_type,
             lots=lots,
             lot_size=lot_size,
-            entry_ltp=leg.ltp,
-            current_ltp=leg.ltp,
+            entry_ltp=leg.ltp + (slippage if leg.action == "BUY" else -slippage),
+            current_ltp=leg.ltp + (slippage if leg.action == "BUY" else -slippage),
         )
         for leg in suggestion.legs
     ]
@@ -390,6 +396,7 @@ def check_exit_conditions(position: PaperPosition) -> PositionStatus | None:
 
     Returns PositionStatus if exit triggered, None otherwise.
     """
+    cfg = _pt_cfg()
     pnl = position.total_unrealized_pnl
 
     if position.stop_loss_amount > 0 and pnl <= -position.stop_loss_amount:
@@ -397,6 +404,21 @@ def check_exit_conditions(position: PaperPosition) -> PositionStatus | None:
 
     if position.profit_target_amount > 0 and pnl >= position.profit_target_amount:
         return PositionStatus.CLOSED_PROFIT_TARGET
+
+    # Time-based exit for debit positions
+    debit_max_hold = cfg.get("debit_max_hold_minutes", 0)
+    if debit_max_hold > 0 and position.strategy_type == StrategyType.DEBIT:
+        now = _now_ist()
+        hold_minutes = (now - position.entry_time).total_seconds() / 60
+        if hold_minutes >= debit_max_hold:
+            return PositionStatus.CLOSED_TIME_LIMIT
+
+    # EOD auto-close
+    eod_close_time = cfg.get("eod_close_time", "15:20")
+    now = _now_ist()
+    h, m = (int(x) for x in eod_close_time.split(":"))
+    if now.time() >= time(h, m):
+        return PositionStatus.CLOSED_EOD
 
     return None
 
@@ -621,7 +643,33 @@ def evaluate_and_manage(
         },
     )
 
+    # --- Initialize session_start_capital on first cycle of the day ---
+    if state.session_start_capital == 0.0:
+        state = state.model_copy(update={
+            "session_start_capital": state.initial_capital + state.net_realized_pnl,
+        })
+
+    # --- Data staleness guard ---
+    max_staleness = cfg.get("max_staleness_minutes", 20)
+    if technicals and technicals.data_staleness_minutes > max_staleness:
+        logger.warning(
+            "Data stale: %.1f min since last candle (limit: %d min). Blocking new trades.",
+            technicals.data_staleness_minutes, max_staleness,
+        )
+        return state
+
     # --- Phase 2: Open new positions ---
+    # Daily loss circuit breaker
+    daily_loss_limit_pct = cfg.get("daily_loss_limit_pct", 3.0)
+    session_pnl = (state.initial_capital + state.net_realized_pnl) - state.session_start_capital
+    daily_loss_limit = state.session_start_capital * (daily_loss_limit_pct / 100)
+    if session_pnl <= -daily_loss_limit:
+        logger.warning(
+            "CIRCUIT BREAKER: Daily loss %.2f exceeds %.1f%% limit (%.2f). Blocking new trades.",
+            abs(session_pnl), daily_loss_limit_pct, daily_loss_limit,
+        )
+        return state
+
     if (
         state.is_auto_trading
         and suggestions
@@ -646,7 +694,24 @@ def evaluate_and_manage(
         # Track held strategy types to avoid duplicates
         held_strategies = {p.strategy for p in state.open_positions}
 
+        # Portfolio concentration limits
+        max_open = cfg.get("max_open_positions", 3)
+        max_per_dir = cfg.get("max_positions_per_direction", 2)
+        dir_counts = Counter(p.direction_bias for p in state.open_positions if p.status == PositionStatus.OPEN)
+
         for suggestion in suggestions:
+            # (e) Portfolio concentration limits
+            open_count = len([p for p in state.open_positions if p.status == PositionStatus.OPEN])
+            if open_count >= max_open:
+                logger.info("Max open positions (%d) reached — blocking new trades", max_open)
+                break
+            if dir_counts.get(suggestion.direction_bias, 0) >= max_per_dir:
+                logger.info(
+                    "Max %s positions (%d) reached — skipping %s",
+                    suggestion.direction_bias, max_per_dir, suggestion.strategy.value,
+                )
+                continue
+
             if suggestion.score < min_score:
                 logger.debug("Skipping %s — score %.1f < min %d", suggestion.strategy.value, suggestion.score, min_score)
                 continue

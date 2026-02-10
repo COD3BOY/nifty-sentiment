@@ -26,6 +26,7 @@ class PositionStatus(str, Enum):
     CLOSED_PROFIT_TARGET = "closed_profit_target"
     CLOSED_MANUAL = "closed_manual"
     CLOSED_EOD = "closed_eod"
+    CLOSED_TIME_LIMIT = "closed_time_limit"
 
 
 class PositionLeg(BaseModel):
@@ -119,6 +120,7 @@ class PaperTradingState(BaseModel):
     last_open_refresh_ts: float = 0.0  # prevents re-open on same refresh cycle
     last_trade_opened_ts: float = 0.0  # cooldown between successive trade opens
     pending_critiques: list[str] = Field(default_factory=list)  # trade IDs awaiting critique
+    session_start_capital: float = 0.0  # capital at start of trading day (set on first cycle)
 
     @model_validator(mode="before")
     @classmethod
