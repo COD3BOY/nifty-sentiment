@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -17,6 +18,24 @@ from core.paper_trading_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _to_ist(dt: datetime) -> datetime:
+    """Convert a datetime to IST for display.
+
+    Handles both naive-UTC (old data) and timezone-aware datetimes.
+    """
+    if dt.tzinfo is None:
+        # Naive datetime — assume UTC (legacy data)
+        return dt.replace(tzinfo=timezone.utc).astimezone(_IST)
+    return dt.astimezone(_IST)
+
+
+def _fmt_time(dt: datetime) -> str:
+    """Format a datetime as IST HH:MM:SS."""
+    return _to_ist(dt).strftime("%H:%M:%S")
 
 
 def _get_state() -> PaperTradingState:
@@ -220,7 +239,7 @@ def _render_open_position_card(
         with info4:
             st.markdown(f"**Confidence:** {pos.confidence}")
         with info5:
-            st.markdown(f"**Entry:** {pos.entry_time.strftime('%H:%M:%S')}")
+            st.markdown(f"**Entry:** {_fmt_time(pos.entry_time)}")
 
         # Legs table
         leg_rows = []
@@ -334,9 +353,9 @@ def _render_trade_history(state: PaperTradingState) -> None:
             # Trade summary metrics
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
-                st.metric("Entry", t.entry_time.strftime("%H:%M:%S"))
+                st.metric("Entry", _fmt_time(t.entry_time))
             with c2:
-                st.metric("Exit", t.exit_time.strftime("%H:%M:%S"))
+                st.metric("Exit", _fmt_time(t.exit_time))
             with c3:
                 st.metric("Premium", _fmt_pnl(t.net_premium))
             with c4:
