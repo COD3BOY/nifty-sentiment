@@ -135,6 +135,7 @@ paper_trading:
   initial_capital: 2500000
   lot_size: 65
   auto_execute: true
+  max_positions: 5
   min_score_to_trade: 30
   max_lots: 4
   capital_utilization: 0.70

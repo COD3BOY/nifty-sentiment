@@ -10,6 +10,7 @@ import logging
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 
 from core.config import load_config
 from core.kite_margins import get_kite_charges, get_kite_margin
@@ -158,28 +159,27 @@ def compute_lots(
 ) -> tuple[int, float]:
     """Compute how many lots to trade based on capital and margin requirements.
 
-    Tries Kite basket_order_margins for 1-lot SPAN margin first; falls back
-    to static margin_estimates from config.
-    For debit strategies (margin=0 in config): uses premium paid per lot as margin.
-    Clamps to [1, max_lots].
+    Two-pass approach:
+      Pass 1: Use 1-lot margin (Kite or static) to estimate lot count.
+      Pass 2: Call Kite with actual lots for true SPAN margin (hedge benefits).
 
-    Returns (lots, margin_per_lot).
+    Returns (lots, total_margin).
     """
     cfg = _pt_cfg()
     max_lots = cfg.get("max_lots", 4)
     utilization = cfg.get("capital_utilization", 0.70)
 
     margin_per_lot: float = 0
+    legs_dicts = [
+        {"action": leg.action, "strike": leg.strike, "option_type": leg.option_type, "ltp": leg.ltp}
+        for leg in suggestion.legs
+    ]
 
-    # Try Kite SPAN margin for 1 lot
+    # Pass 1 — sizing estimate using 1-lot margin
     if expiry:
-        legs_dicts = [
-            {"action": leg.action, "strike": leg.strike, "option_type": leg.option_type, "ltp": leg.ltp}
-            for leg in suggestion.legs
-        ]
-        kite_margin = get_kite_margin(legs_dicts, expiry, lots=1, lot_size=lot_size)
-        if kite_margin is not None:
-            margin_per_lot = kite_margin
+        kite_margin_1 = get_kite_margin(legs_dicts, expiry, lots=1, lot_size=lot_size)
+        if kite_margin_1 is not None:
+            margin_per_lot = kite_margin_1
 
     # Fallback to static estimates
     if margin_per_lot == 0:
@@ -194,7 +194,15 @@ def compute_lots(
 
     usable_capital = available_capital * utilization
     lots = max(1, min(max_lots, math.floor(usable_capital / margin_per_lot)))
-    return lots, margin_per_lot
+
+    # Pass 2 — accurate SPAN margin for actual lot count
+    total_margin = margin_per_lot * lots  # default: linear estimate
+    if expiry and lots > 0:
+        kite_margin_n = get_kite_margin(legs_dicts, expiry, lots=lots, lot_size=lot_size)
+        if kite_margin_n is not None:
+            total_margin = kite_margin_n
+
+    return lots, total_margin
 
 
 def compute_execution_cost(
@@ -277,12 +285,12 @@ def open_position(
 
     # Position sizing
     if available_capital is not None:
-        lots, margin_per_lot = compute_lots(
+        lots, total_margin = compute_lots(
             suggestion.strategy, available_capital, lot_size, suggestion, expiry=expiry,
         )
     else:
         lots = 1
-        margin_per_lot = 0.0
+        total_margin = 0.0
 
     net_premium, sl, pt = compute_risk_params(suggestion, lot_size, lots)
 
@@ -316,7 +324,7 @@ def open_position(
         stop_loss_amount=sl,
         profit_target_amount=pt,
         execution_cost=exec_cost,
-        margin_required=margin_per_lot * lots,
+        margin_required=total_margin,
     )
 
 
@@ -421,8 +429,8 @@ def evaluate_and_manage(
     """Main paper trading loop. Pure function: state in, state out.
 
     Called every 60s when Options Desk refreshes:
-    1. If open position -> update LTPs -> check exits
-    2. If no position + auto_trading + suggestions exist -> open best
+    Phase 1: Manage existing positions — update LTPs, check SL/PT exits
+    Phase 2: Open new positions — fill remaining slots from suggestions
 
     refresh_ts gates the "open new position" path — prevents re-opening
     on the same refresh cycle after a close (manual, SL, or PT).
@@ -432,10 +440,17 @@ def evaluate_and_manage(
 
     cfg = _pt_cfg()
     min_score = cfg.get("min_score_to_trade", 30)
+    max_positions = cfg.get("max_positions", 5)
 
-    # --- Manage existing position ---
-    if state.current_position and state.current_position.status == PositionStatus.OPEN:
-        position = state.current_position
+    # --- Phase 1: Manage existing positions ---
+    still_open: list[PaperPosition] = []
+    new_records: list[TradeRecord] = []
+    added_realized = 0.0
+    added_costs = 0.0
+
+    for position in state.open_positions:
+        if position.status != PositionStatus.OPEN:
+            continue
 
         # Update LTPs if chain available
         if chain:
@@ -444,51 +459,92 @@ def evaluate_and_manage(
         # Check exit conditions
         exit_reason = check_exit_conditions(position)
         if exit_reason:
-            closed_pos, record = close_position(position, exit_reason)
+            _closed_pos, record = close_position(position, exit_reason)
             logger.info(
                 "Paper trade closed: %s | reason=%s | pnl=%.2f | cost=%.2f | net=%.2f",
                 record.strategy, exit_reason.value, record.realized_pnl,
                 record.execution_cost, record.net_pnl,
             )
-            return state.model_copy(
-                update={
-                    "current_position": None,
-                    "trade_log": state.trade_log + [record],
-                    "total_realized_pnl": state.total_realized_pnl + record.realized_pnl,
-                    "total_execution_costs": state.total_execution_costs + record.execution_cost,
-                    "last_open_refresh_ts": refresh_ts,
-                },
-            )
+            new_records.append(record)
+            added_realized += record.realized_pnl
+            added_costs += record.execution_cost
+        else:
+            still_open.append(position)
 
-        # Position still open, just update LTPs
-        return state.model_copy(update={"current_position": position})
+    # Build intermediate state after Phase 1
+    state = state.model_copy(
+        update={
+            "open_positions": still_open,
+            "trade_log": state.trade_log + new_records,
+            "total_realized_pnl": state.total_realized_pnl + added_realized,
+            "total_execution_costs": state.total_execution_costs + added_costs,
+            # If any positions were closed, gate re-open to next cycle
+            "last_open_refresh_ts": refresh_ts if new_records else state.last_open_refresh_ts,
+        },
+    )
 
-    # --- Open new position (only on fresh data) ---
+    # --- Phase 2: Open new positions ---
     if (
         state.is_auto_trading
-        and state.current_position is None
         and suggestions
         and chain
         and refresh_ts > state.last_open_refresh_ts
+        and len(state.open_positions) < max_positions
     ):
-        # Pick the best suggestion that meets the minimum score
+        # Track held strategy types to avoid duplicates
+        held_strategies = {p.strategy for p in state.open_positions}
+        new_positions: list[PaperPosition] = []
+
         for suggestion in suggestions:
-            if suggestion.score >= min_score:
-                position = open_position(
-                    suggestion, lot_size, state.capital_remaining,
-                    expiry=chain.expiry if chain else None,
-                )
-                logger.info(
-                    "Paper trade opened: %s | bias=%s | score=%.1f | lots=%d | premium=%.2f | cost=%.2f",
-                    position.strategy, position.direction_bias,
-                    position.score, position.lots, position.net_premium,
-                    position.execution_cost,
-                )
-                return state.model_copy(
-                    update={
-                        "current_position": position,
-                        "last_open_refresh_ts": refresh_ts,
-                    },
-                )
+            if len(state.open_positions) + len(new_positions) >= max_positions:
+                break
+            if suggestion.score < min_score:
+                continue
+            if suggestion.strategy.value in held_strategies:
+                continue
+            if state.capital_remaining <= 0:
+                break
+
+            position = open_position(
+                suggestion, lot_size, state.capital_remaining,
+                expiry=chain.expiry,
+            )
+            logger.info(
+                "Paper trade opened: %s | bias=%s | score=%.1f | lots=%d | margin=%.0f | premium=%.2f | cost=%.2f",
+                position.strategy, position.direction_bias,
+                position.score, position.lots, position.margin_required,
+                position.net_premium, position.execution_cost,
+            )
+            new_positions.append(position)
+            held_strategies.add(position.strategy)
+            # Update state so capital_remaining reflects newly locked margin
+            state = state.model_copy(
+                update={"open_positions": state.open_positions + [position]},
+            )
+
+        if new_positions:
+            state = state.model_copy(update={"last_open_refresh_ts": refresh_ts})
 
     return state
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "paper_trading_state.json"
+
+
+def save_state(state: PaperTradingState) -> None:
+    """Persist paper trading state to disk (atomic write)."""
+    _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(state.model_dump_json(indent=2))
+    tmp.replace(_STATE_FILE)  # atomic on POSIX
+
+
+def load_state() -> PaperTradingState | None:
+    """Load paper trading state from disk. Returns None if no saved state."""
+    if _STATE_FILE.exists():
+        return PaperTradingState.model_validate_json(_STATE_FILE.read_text())
+    return None

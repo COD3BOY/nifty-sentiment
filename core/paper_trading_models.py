@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 class StrategyType(str, Enum):
@@ -96,12 +96,22 @@ class PaperTradingState(BaseModel):
     """Root container for paper trading session state."""
 
     initial_capital: float = 2_500_000.0
-    current_position: PaperPosition | None = None
+    open_positions: list[PaperPosition] = Field(default_factory=list)
     trade_log: list[TradeRecord] = Field(default_factory=list)
     total_realized_pnl: float = 0.0
     total_execution_costs: float = 0.0
     is_auto_trading: bool = True
     last_open_refresh_ts: float = 0.0  # prevents re-open on same refresh cycle
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_single_position(cls, data):
+        """Migrate old single-position JSON format to open_positions list."""
+        if isinstance(data, dict) and "current_position" in data:
+            old_pos = data.pop("current_position")
+            if "open_positions" not in data:
+                data["open_positions"] = [old_pos] if old_pos else []
+        return data
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -110,15 +120,18 @@ class PaperTradingState(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def margin_in_use(self) -> float:
+        return sum(p.margin_required for p in self.open_positions if p.status == PositionStatus.OPEN)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def capital_remaining(self) -> float:
-        return self.initial_capital + self.total_realized_pnl - self.total_execution_costs
+        return self.initial_capital + self.total_realized_pnl - self.total_execution_costs - self.margin_in_use
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def unrealized_pnl(self) -> float:
-        if self.current_position:
-            return self.current_position.total_unrealized_pnl
-        return 0.0
+        return sum(p.total_unrealized_pnl for p in self.open_positions if p.status == PositionStatus.OPEN)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
