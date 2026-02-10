@@ -1,4 +1,5 @@
 streamlit>=1.30.0
+streamlit-autorefresh>=1.0.1
 pydantic>=2.5.0
 sqlalchemy>=2.0.0
 pyyaml>=6.0

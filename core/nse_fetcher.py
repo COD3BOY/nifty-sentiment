@@ -1,6 +1,7 @@
 """NSE Option Chain API client with session/cookie management."""
 
 import logging
+import os
 import time
 from datetime import datetime
 
@@ -142,15 +143,19 @@ class KiteOptionChainFetcher:
     _QUOTE_BATCH_SIZE = 500  # Kite max instruments per quote() call
 
     def __init__(self) -> None:
-        self._kite = None
+        pass
 
     def _get_kite(self):
-        """Lazy-init KiteConnect; returns instance or None if creds missing."""
-        if self._kite is not None:
-            return self._kite
+        """Create a fresh KiteConnect instance each time.
 
-        api_key = get_env("KITE_API_KEY")
-        access_token = get_env("KITE_ACCESS_TOKEN")
+        Re-reads env vars on every call so that a refreshed access token
+        is picked up without restarting the process.
+        """
+        from dotenv import load_dotenv
+        load_dotenv(override=True)  # re-read .env to pick up token refreshes
+
+        api_key = os.environ.get("KITE_API_KEY", "")
+        access_token = os.environ.get("KITE_ACCESS_TOKEN", "")
         if not api_key or not access_token:
             return None
 
@@ -158,7 +163,6 @@ class KiteOptionChainFetcher:
 
         kite = KiteConnect(api_key=api_key)
         kite.set_access_token(access_token)
-        self._kite = kite
         return kite
 
     def fetch(self, symbol: str = "NIFTY") -> OptionChainData:

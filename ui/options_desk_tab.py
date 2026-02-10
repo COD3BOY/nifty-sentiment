@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from core.indicators import (
     compute_bollinger_bands,
@@ -80,7 +81,10 @@ def render_options_desk_tab() -> None:
             st.session_state.options_last_refresh = time.time()
         st.rerun()
 
-    # Auto-refresh during market hours
+    # Auto-refresh during market hours — st_autorefresh triggers a rerun every 60s
+    if _is_market_hours():
+        st_autorefresh(interval=60_000, key="options_desk_autorefresh")
+
     if (
         _is_market_hours()
         and st.session_state.options_last_refresh > 0
