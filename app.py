@@ -29,15 +29,10 @@ config = load_config()
 # --- Session State Init ---
 if "engine" not in st.session_state:
     st.session_state.engine = SentimentEngine()
-if "sentiment" not in st.session_state:
-    st.session_state.sentiment = None
 if "pre_market_sentiment" not in st.session_state:
     st.session_state.pre_market_sentiment = None
 if "pm_last_refresh" not in st.session_state:
     st.session_state.pm_last_refresh = 0.0
-if "sd_last_refresh" not in st.session_state:
-    st.session_state.sd_last_refresh = 0.0
-
 engine: SentimentEngine = st.session_state.engine
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -128,8 +123,8 @@ def _live_clock_html() -> str:
 # ============================================================
 # TABS
 # ============================================================
-tab_premarket, tab_dashboard, tab_options, tab_paper = st.tabs(
-    ["🌅 Pre-Market Analysis", "📊 Sentiment Dashboard", "⚡ Options Desk", "📈 Paper Trading"]
+tab_premarket, tab_options, tab_paper = st.tabs(
+    ["🌅 Pre-Market Analysis", "⚡ Options Desk", "📈 Paper Trading"]
 )
 
 
@@ -389,188 +384,13 @@ with tab_premarket:
 
 
 # ============================================================
-# TAB 2: SENTIMENT DASHBOARD
-# ============================================================
-with tab_dashboard:
-    # --- Standardized header ---
-    _s1, _s2, _s3 = st.columns([3, 1.5, 1.5])
-    with _s1:
-        st.title("📊 Sentiment Dashboard")
-        st.caption("Weighted sentiment from all sources — news, global markets, FII/DII, VIX, macro")
-    with _s2:
-        history_days = st.selectbox(
-            "History range",
-            options=[7, 14, 30, 60, 90],
-            index=2,
-            format_func=lambda x: f"{x} days",
-            key="hist_days",
-        )
-    with _s3:
-        if st.button("Refresh Dashboard", key="refresh_dashboard", type="primary", use_container_width=True):
-            with st.spinner("Fetching sentiment from all sources..."):
-                st.session_state.sentiment = run_async(engine.compute_sentiment())
-                engine.update_market_actuals()
-                st.session_state.sd_last_refresh = time.time()
-            st.rerun()
-        st.caption(f"Last refresh: {_last_refresh_text(st.session_state.sd_last_refresh)}")
-
-    st.divider()
-
-    sentiment = st.session_state.sentiment
-
-    if sentiment is None:
-        st.info("Click **Refresh Dashboard** to fetch the latest analysis.")
-    else:
-        # --- Row 1: Gauge + Summary ---
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            st.subheader("Market Sentiment Gauge")
-
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number+delta",
-                value=sentiment.overall_score,
-                title={"text": sentiment.level.value.replace("_", " ").title()},
-                number={"suffix": "", "valueformat": ".2f"},
-                gauge={
-                    "axis": {"range": [-1, 1], "tickwidth": 1},
-                    "bar": {"color": LEVEL_COLORS.get(sentiment.level, "#888")},
-                    "steps": [
-                        {"range": [-1.0, -0.6], "color": "#ffcdd2"},
-                        {"range": [-0.6, -0.3], "color": "#ffe0b2"},
-                        {"range": [-0.3, -0.1], "color": "#fff9c4"},
-                        {"range": [-0.1, 0.1], "color": "#f5f5f5"},
-                        {"range": [0.1, 0.3], "color": "#dcedc8"},
-                        {"range": [0.3, 0.6], "color": "#c8e6c9"},
-                        {"range": [0.6, 1.0], "color": "#a5d6a7"},
-                    ],
-                    "threshold": {
-                        "line": {"color": "black", "width": 4},
-                        "thickness": 0.75,
-                        "value": sentiment.overall_score,
-                    },
-                },
-            ))
-            fig.update_layout(height=300, margin=dict(t=60, b=20, l=30, r=30))
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.subheader("Summary")
-            st.metric("Overall Score", f"{sentiment.overall_score:.3f}")
-            st.metric("Confidence", f"{sentiment.confidence:.1%}")
-            st.metric("Sources", f"{sentiment.sources_used} active / {sentiment.sources_failed} failed")
-            st.caption(f"Last updated: {sentiment.timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
-
-        # --- Row 2: Source Breakdown ---
-        st.divider()
-        st.subheader("Per-Source Breakdown")
-
-        if sentiment.source_scores:
-            source_names = [ss.source_name.replace("_", " ").title() for ss in sentiment.source_scores]
-            source_values = [ss.score for ss in sentiment.source_scores]
-            colors = ["#4caf50" if v >= 0 else "#f44336" for v in source_values]
-
-            fig_bar = go.Figure(go.Bar(
-                x=source_values,
-                y=source_names,
-                orientation="h",
-                marker_color=colors,
-                text=[f"{v:+.3f}" for v in source_values],
-                textposition="outside",
-            ))
-            fig_bar.update_layout(
-                xaxis=dict(range=[-1.1, 1.1], title="Sentiment Score"),
-                yaxis=dict(autorange="reversed"),
-                height=max(200, len(source_names) * 50),
-                margin=dict(t=20, b=40, l=120, r=40),
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-            with st.expander("Source Details", expanded=False):
-                for ss in sentiment.source_scores:
-                    st.markdown(f"**{ss.source_name.replace('_', ' ').title()}** — Score: `{ss.score:+.3f}` | Confidence: `{ss.confidence:.1%}`")
-                    st.caption(ss.explanation)
-                    if ss.bullish_factors:
-                        st.markdown("  🟢 " + " | ".join(ss.bullish_factors))
-                    if ss.bearish_factors:
-                        st.markdown("  🔴 " + " | ".join(ss.bearish_factors))
-                    st.divider()
-
-        # --- Row 3: Key Drivers ---
-        st.divider()
-        col_bull, col_bear = st.columns(2)
-
-        with col_bull:
-            st.subheader("🟢 Bullish Factors")
-            if sentiment.bullish_factors:
-                for f in sentiment.bullish_factors:
-                    st.markdown(f"- {f}")
-            else:
-                st.caption("No bullish factors identified")
-
-        with col_bear:
-            st.subheader("🔴 Bearish Factors")
-            if sentiment.bearish_factors:
-                for f in sentiment.bearish_factors:
-                    st.markdown(f"- {f}")
-            else:
-                st.caption("No bearish factors identified")
-
-        # --- Row 4: Historical Chart ---
-        st.divider()
-        st.subheader(f"Historical Sentiment ({history_days} days)")
-
-        history = engine.get_historical(days=history_days)
-        if history:
-            dates = [h["timestamp"] for h in history]
-            scores = [h["overall_score"] for h in history]
-
-            fig_hist = go.Figure()
-            fig_hist.add_trace(go.Scatter(
-                x=dates, y=scores,
-                mode="lines+markers",
-                name="Sentiment Score",
-                line=dict(color="#1976d2", width=2),
-                fill="tozeroy",
-                fillcolor="rgba(25, 118, 210, 0.1)",
-            ))
-            fig_hist.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-            fig_hist.add_hrect(y0=-1, y1=-0.3, fillcolor="rgba(244,67,54,0.05)", line_width=0)
-            fig_hist.add_hrect(y0=0.3, y1=1, fillcolor="rgba(76,175,80,0.05)", line_width=0)
-            fig_hist.update_layout(
-                yaxis=dict(range=[-1.1, 1.1], title="Score"),
-                xaxis=dict(title="Date"),
-                height=350,
-                margin=dict(t=20, b=40),
-            )
-            st.plotly_chart(fig_hist, use_container_width=True)
-        else:
-            st.caption("No historical data yet. Run a few analyses to build history.")
-
-        # --- Row 5: Accuracy Tracking ---
-        st.divider()
-        st.subheader("Prediction Accuracy")
-
-        accuracy = engine.get_accuracy(days=history_days)
-        if accuracy["total"] > 0:
-            col_a1, col_a2, col_a3 = st.columns(3)
-            with col_a1:
-                st.metric("Accuracy", f"{accuracy['accuracy']:.1f}%")
-            with col_a2:
-                st.metric("Correct", accuracy["correct"])
-            with col_a3:
-                st.metric("Total Predictions", accuracy["total"])
-        else:
-            st.caption("Accuracy tracking will begin once market actuals are recorded. Run daily to build data.")
-
-# ============================================================
-# TAB 3: OPTIONS DESK
+# TAB 2: OPTIONS DESK
 # ============================================================
 with tab_options:
     render_options_desk_tab()
 
 # ============================================================
-# TAB 4: PAPER TRADING
+# TAB 3: PAPER TRADING
 # ============================================================
 with tab_paper:
     from ui.paper_trading_tab import render_paper_trading_tab

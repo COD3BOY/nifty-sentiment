@@ -183,7 +183,3 @@ criticizer:
   max_parameter_drift_pct: 0.30
   override_min_confidence: 0.7
 
-dashboard:
-  title: "NIFTY Sentiment Dashboard"
-  auto_refresh_seconds: 300
-  history_days: 30
