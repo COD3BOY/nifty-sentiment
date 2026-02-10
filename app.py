@@ -128,8 +128,8 @@ def _live_clock_html() -> str:
 # ============================================================
 # TABS
 # ============================================================
-tab_premarket, tab_dashboard, tab_options = st.tabs(
-    ["🌅 Pre-Market Analysis", "📊 Sentiment Dashboard", "⚡ Options Desk"]
+tab_premarket, tab_dashboard, tab_options, tab_paper = st.tabs(
+    ["🌅 Pre-Market Analysis", "📊 Sentiment Dashboard", "⚡ Options Desk", "📈 Paper Trading"]
 )
 
 
@@ -568,3 +568,15 @@ with tab_dashboard:
 # ============================================================
 with tab_options:
     render_options_desk_tab()
+
+# ============================================================
+# TAB 4: PAPER TRADING
+# ============================================================
+with tab_paper:
+    from ui.paper_trading_tab import render_paper_trading_tab
+
+    snap = st.session_state.get("options_snapshot")
+    render_paper_trading_tab(
+        suggestions=snap.trade_suggestions if snap else None,
+        chain=snap.chain if snap else None,
+    )

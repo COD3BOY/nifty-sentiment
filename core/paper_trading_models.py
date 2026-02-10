@@ -1,0 +1,120 @@
+"""Pydantic models for the Paper Trading simulation."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from enum import Enum
+
+from pydantic import BaseModel, Field, computed_field
+
+
+class StrategyType(str, Enum):
+    CREDIT = "credit"
+    DEBIT = "debit"
+
+
+class PositionStatus(str, Enum):
+    OPEN = "open"
+    CLOSED_STOP_LOSS = "closed_stop_loss"
+    CLOSED_PROFIT_TARGET = "closed_profit_target"
+    CLOSED_MANUAL = "closed_manual"
+    CLOSED_EOD = "closed_eod"
+
+
+class PositionLeg(BaseModel):
+    """Single leg of a paper-traded position."""
+
+    action: str  # "SELL" or "BUY"
+    instrument: str  # e.g. "NIFTY 23500 CE"
+    strike: float
+    option_type: str  # "CE" or "PE"
+    lots: int = 1
+    entry_ltp: float
+    current_ltp: float
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unrealized_pnl(self) -> float:
+        lot_size = 25  # NIFTY lot size
+        if self.action == "BUY":
+            return (self.current_ltp - self.entry_ltp) * self.lots * lot_size
+        else:  # SELL
+            return (self.entry_ltp - self.current_ltp) * self.lots * lot_size
+
+
+class PaperPosition(BaseModel):
+    """Multi-leg paper position."""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    strategy: str
+    strategy_type: StrategyType
+    direction_bias: str
+    confidence: str
+    score: float
+    legs: list[PositionLeg]
+    entry_time: datetime = Field(default_factory=datetime.utcnow)
+    exit_time: datetime | None = None
+    status: PositionStatus = PositionStatus.OPEN
+    net_premium: float = 0.0
+    stop_loss_amount: float = 0.0
+    profit_target_amount: float = 0.0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_unrealized_pnl(self) -> float:
+        return sum(leg.unrealized_pnl for leg in self.legs)
+
+
+class TradeRecord(BaseModel):
+    """Immutable record of a closed trade."""
+
+    id: str
+    strategy: str
+    strategy_type: StrategyType
+    direction_bias: str
+    confidence: str
+    score: float
+    legs_summary: list[dict]
+    entry_time: datetime
+    exit_time: datetime
+    exit_reason: PositionStatus
+    realized_pnl: float
+    net_premium: float
+    stop_loss_amount: float
+    profit_target_amount: float
+
+
+class PaperTradingState(BaseModel):
+    """Root container for paper trading session state."""
+
+    initial_capital: float = 100_000.0
+    current_position: PaperPosition | None = None
+    trade_log: list[TradeRecord] = Field(default_factory=list)
+    total_realized_pnl: float = 0.0
+    is_auto_trading: bool = True
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def capital_remaining(self) -> float:
+        return self.initial_capital + self.total_realized_pnl
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unrealized_pnl(self) -> float:
+        if self.current_position:
+            return self.current_position.total_unrealized_pnl
+        return 0.0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_pnl(self) -> float:
+        return self.total_realized_pnl + self.unrealized_pnl
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def win_rate(self) -> float:
+        if not self.trade_log:
+            return 0.0
+        wins = sum(1 for t in self.trade_log if t.realized_pnl > 0)
+        return (wins / len(self.trade_log)) * 100

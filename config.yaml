@@ -131,6 +131,18 @@ options_desk:
     spread_width: 2
     min_score: 20
 
+paper_trading:
+  initial_capital: 100000
+  lot_size: 25
+  auto_execute: true
+  min_score_to_trade: 30
+  stop_loss:
+    credit_fallback_multiplier: 1.5
+    debit_premium_pct: 0.50
+  profit_target:
+    credit_pct: 0.50
+    debit_pct: 1.00
+
 dashboard:
   title: "NIFTY Sentiment Dashboard"
   auto_refresh_seconds: 300
