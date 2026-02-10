@@ -117,6 +117,7 @@ class PaperTradingState(BaseModel):
     total_execution_costs: float = 0.0
     is_auto_trading: bool = True
     last_open_refresh_ts: float = 0.0  # prevents re-open on same refresh cycle
+    last_trade_opened_ts: float = 0.0  # cooldown between successive trade opens
     pending_critiques: list[str] = Field(default_factory=list)  # trade IDs awaiting critique
 
     @model_validator(mode="before")

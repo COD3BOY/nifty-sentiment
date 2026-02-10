@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time as _time
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -626,12 +627,32 @@ def evaluate_and_manage(
         and suggestions
         and chain
     ):
+        # (a) Skip on fresh data refresh — let data settle one cycle
+        if refresh_ts != 0.0 and refresh_ts != state.last_open_refresh_ts:
+            logger.info("Skipping trade opening — letting fresh data settle (refresh_ts=%.1f)", refresh_ts)
+            state = state.model_copy(update={"last_open_refresh_ts": refresh_ts})
+            return state
+
+        # (b) 60-second cooldown between successive trade opens
+        cooldown = cfg.get("trade_cooldown_seconds", 60)
+        now_ts = _time.time()
+        if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < cooldown:
+            logger.info(
+                "Trade cooldown active — %.0fs remaining",
+                cooldown - (now_ts - state.last_trade_opened_ts),
+            )
+            return state
+
         # Track held strategy types to avoid duplicates
         held_strategies = {p.strategy for p in state.open_positions}
-        opened_any = False
 
         for suggestion in suggestions:
             if suggestion.score < min_score:
+                logger.debug("Skipping %s — score %.1f < min %d", suggestion.strategy.value, suggestion.score, min_score)
+                continue
+            # (d) High-confidence-only gate
+            if suggestion.confidence != "High":
+                logger.info("Skipping %s — confidence %s (require High)", suggestion.strategy.value, suggestion.confidence)
                 continue
             block_reason = _is_blocked_by_expiry_guards(suggestion, chain, lot_size)
             if block_reason:
@@ -648,17 +669,21 @@ def evaluate_and_manage(
                 technicals=technicals, analytics=analytics, chain=chain,
             )
             logger.info(
-                "Paper trade opened: %s | bias=%s | score=%.1f | lots=%d | margin=%.0f | premium=%.2f | cost=%.2f",
-                position.strategy, position.direction_bias,
+                "Paper trade opened: %s | bias=%s | conf=%s | score=%.1f | lots=%d | margin=%.0f | premium=%.2f | cost=%.2f",
+                position.strategy, position.direction_bias, position.confidence,
                 position.score, position.lots, position.margin_required,
                 position.net_premium, position.execution_cost,
             )
-            opened_any = True
             held_strategies.add(position.strategy)
-            # Update state so capital_remaining reflects newly locked margin
+            # Update state: add position + record trade timestamp
             state = state.model_copy(
-                update={"open_positions": state.open_positions + [position]},
+                update={
+                    "open_positions": state.open_positions + [position],
+                    "last_trade_opened_ts": _time.time(),
+                },
             )
+            # (c) Max 1 trade per cycle
+            break
 
     return state
 

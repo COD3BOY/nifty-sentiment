@@ -135,7 +135,8 @@ paper_trading:
   initial_capital: 2500000
   lot_size: 65
   auto_execute: true
-  min_score_to_trade: 30
+  min_score_to_trade: 50
+  trade_cooldown_seconds: 60
   max_lots: 4
   capital_utilization: 0.70
   stop_loss:

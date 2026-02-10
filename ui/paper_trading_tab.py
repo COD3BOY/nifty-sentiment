@@ -107,23 +107,7 @@ def render_paper_trading_tab(
     """Main entry point for the Paper Trading tab."""
     state = _get_state()
 
-    # --- Run engine logic (evaluate_and_manage) ---
-    cfg = load_config().get("paper_trading", {})
-    lot_size = cfg.get("lot_size", 25)
-    refresh_ts = st.session_state.get("options_last_refresh", 0.0)
-
-    new_state = evaluate_and_manage(
-        state, suggestions, chain,
-        technicals=technicals, analytics=analytics,
-        lot_size=lot_size, refresh_ts=refresh_ts,
-    )
-    _set_state(new_state)
-    state = new_state
-
-    # --- Process one pending critique per cycle (non-blocking) ---
-    state = _process_pending_critique(state)
-
-    # --- Header row ---
+    # --- Header row (render before engine so reset takes effect first) ---
     h1, h2 = st.columns([4, 1.5])
     with h1:
         st.title("Paper Trading")
@@ -146,6 +130,22 @@ def render_paper_trading_tab(
             _set_state(fresh)
             _clear_critiques_db()
             st.rerun()
+
+    # --- Run engine logic (evaluate_and_manage) ---
+    cfg = load_config().get("paper_trading", {})
+    lot_size = cfg.get("lot_size", 25)
+    refresh_ts = st.session_state.get("options_last_refresh", 0.0)
+
+    new_state = evaluate_and_manage(
+        state, suggestions, chain,
+        technicals=technicals, analytics=analytics,
+        lot_size=lot_size, refresh_ts=refresh_ts,
+    )
+    _set_state(new_state)
+    state = new_state
+
+    # --- Process one pending critique per cycle (non-blocking) ---
+    state = _process_pending_critique(state)
 
     st.divider()
 

@@ -102,8 +102,11 @@ def _fmt_currency(amount: float) -> str:
 
 def _bb_width_pct(tech: TechnicalIndicators) -> float:
     if tech.bb_middle > 0:
-        return ((tech.bb_upper - tech.bb_lower) / tech.bb_middle) * 100
-    return 0.0
+        width = ((tech.bb_upper - tech.bb_lower) / tech.bb_middle) * 100
+        if width < 0.1:
+            return 99.0  # BB data invalid (collapsed to spot) — treat as wide
+        return width
+    return 99.0  # no data — treat as wide (non-squeeze)
 
 
 def _ema_bullish(tech: TechnicalIndicators) -> bool:
@@ -151,14 +154,18 @@ def _eval_short_straddle(
 
     iv_low = _p(ov, "iv_low_threshold", 15)
     iv_mod = _p(ov, "iv_moderate_threshold", 20)
-    if analytics.atm_iv < iv_low:
-        score += 25
-        reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — low, favorable for selling")
-    elif analytics.atm_iv < iv_mod:
-        score += 15
-        reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — moderate")
+    if analytics.atm_iv > 0:
+        if analytics.atm_iv < iv_low:
+            score += 25
+            reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — low, favorable for selling")
+        elif analytics.atm_iv < iv_mod:
+            score += 15
+            reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — moderate")
+        else:
+            score -= 10
     else:
-        score -= 10
+        score -= 5
+        reasons.append("IV data unavailable — cannot assess volatility")
 
     rsi_n_lo = _p(ov, "rsi_neutral_low", 40)
     rsi_n_hi = _p(ov, "rsi_neutral_high", 60)
@@ -250,11 +257,15 @@ def _eval_short_strangle(
 
     iv_low = _p(ov, "iv_low_threshold", 18)
     iv_mod = _p(ov, "iv_moderate_threshold", 22)
-    if analytics.atm_iv < iv_low:
-        score += 20
-        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — favorable for selling")
-    elif analytics.atm_iv < iv_mod:
-        score += 10
+    if analytics.atm_iv > 0:
+        if analytics.atm_iv < iv_low:
+            score += 20
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — favorable for selling")
+        elif analytics.atm_iv < iv_mod:
+            score += 10
+    else:
+        score -= 5
+        reasons.append("IV data unavailable — cannot assess volatility")
 
     # Range-bound: strong support + resistance
     if analytics.support_oi > 0 and analytics.resistance_oi > 0:
@@ -339,11 +350,15 @@ def _eval_long_straddle(
         reasons.append(f"IV skew {analytics.iv_skew:+.1f} — significant imbalance, move expected")
 
     iv_elevated = _p(ov, "iv_elevated_threshold", 18)
-    if analytics.atm_iv > iv_elevated:
-        score += 10
-        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — elevated, implies expected movement")
+    if analytics.atm_iv > 0:
+        if analytics.atm_iv > iv_elevated:
+            score += 10
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — elevated, implies expected movement")
+        else:
+            score -= 10
     else:
-        score -= 10
+        score -= 5
+        reasons.append("IV data unavailable — cannot assess volatility")
 
     rsi_coil_lo = _p(ov, "rsi_coiled_low", 45)
     rsi_coil_hi = _p(ov, "rsi_coiled_high", 55)
@@ -409,11 +424,15 @@ def _eval_long_strangle(
 
     iv_cheap = _p(ov, "iv_cheap_threshold", 16)
     iv_mod = _p(ov, "iv_moderate_threshold", 20)
-    if analytics.atm_iv < iv_cheap:
-        score += 20
-        reasons.append(f"IV {analytics.atm_iv:.1f}% — cheap premiums, good entry for longs")
-    elif analytics.atm_iv < iv_mod:
-        score += 10
+    if analytics.atm_iv > 0:
+        if analytics.atm_iv < iv_cheap:
+            score += 20
+            reasons.append(f"IV {analytics.atm_iv:.1f}% — cheap premiums, good entry for longs")
+        elif analytics.atm_iv < iv_mod:
+            score += 10
+    else:
+        score -= 5
+        reasons.append("IV data unavailable — cannot assess volatility")
 
     iv_skew_thresh = _p(ov, "iv_skew_threshold", 2)
     if abs(analytics.iv_skew) > iv_skew_thresh:
@@ -786,9 +805,13 @@ def _eval_iron_condor(
         reasons.append(f"BB width {bw:.1f}% — tight range")
 
     iv_mod = _p(ov, "iv_moderate_threshold", 18)
-    if analytics.atm_iv < iv_mod:
-        score += 15
-        reasons.append(f"IV {analytics.atm_iv:.1f}% — moderate, good for selling")
+    if analytics.atm_iv > 0:
+        if analytics.atm_iv < iv_mod:
+            score += 15
+            reasons.append(f"IV {analytics.atm_iv:.1f}% — moderate, good for selling")
+    else:
+        score -= 5
+        reasons.append("IV data unavailable — cannot assess volatility")
 
     pcr_bal_lo = _p(ov, "pcr_balanced_low", 0.85)
     pcr_bal_hi = _p(ov, "pcr_balanced_high", 1.15)

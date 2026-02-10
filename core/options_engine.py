@@ -82,6 +82,17 @@ class OptionsDeskEngine:
             logger.error("Candle fetch failed: %s", exc)
             errors.append(f"Candle data unavailable: {exc}")
 
+        # Data quality warnings
+        if analytics and analytics.atm_iv == 0.0:
+            errors.append("IV data unavailable (Kite fallback) — IV-dependent scores unreliable")
+            logger.warning("IV data unavailable (atm_iv=0.0) — Kite fallback likely, IV scores unreliable")
+        if analytics and technicals:
+            logger.info(
+                "Data quality: spot=%.0f, rsi=%.1f, atm_iv=%.1f, bb_width=%.2f%%",
+                technicals.spot, technicals.rsi, analytics.atm_iv,
+                ((technicals.bb_upper - technicals.bb_lower) / technicals.bb_middle * 100) if technicals.bb_middle > 0 else 0.0,
+            )
+
         signals = self._build_signals(analytics, technicals)
 
         # Generate trade suggestions (non-critical — errors don't block snapshot)
