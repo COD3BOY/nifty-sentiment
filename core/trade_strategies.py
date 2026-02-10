@@ -1028,21 +1028,12 @@ def generate_trade_suggestions(
     min_score = _min_score()
     suggestions: list[TradeSuggestion] = []
 
-    # Load runtime parameter overrides from DB (empty dict on first run)
-    from core.database import SentimentDatabase
-    try:
-        db = SentimentDatabase()
-        all_overrides = db.get_active_overrides()
-    except Exception:
-        logger.debug("Could not load parameter overrides, using defaults", exc_info=True)
-        all_overrides = {}
-
     for evaluator in _ALL_EVALUATORS:
         try:
             strategy_name = _EVALUATOR_STRATEGY_MAP[evaluator]
             result = evaluator(
                 analytics, technicals, chain,
-                overrides=all_overrides.get(strategy_name, {}),
+                overrides={},
             )
             if result is not None and result.score >= min_score:
                 suggestions.append(result)

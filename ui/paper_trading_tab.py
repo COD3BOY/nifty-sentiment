@@ -58,6 +58,24 @@ def _set_state(state: PaperTradingState) -> None:
     save_state(state)
 
 
+def _format_context_indicators(ctx: dict) -> list[str]:
+    """Extract key indicator strings from an entry/exit context dict."""
+    indicators: list[str] = []
+    if ctx.get("rsi"):
+        indicators.append(f"RSI {ctx['rsi']:.1f}")
+    if ctx.get("atm_iv"):
+        indicators.append(f"IV {ctx['atm_iv']:.1f}%")
+    if ctx.get("pcr"):
+        indicators.append(f"PCR {ctx['pcr']:.2f}")
+    if ctx.get("spot") and ctx.get("vwap"):
+        rel = "above" if ctx["spot"] > ctx["vwap"] else "below"
+        indicators.append(f"Spot {rel} VWAP")
+    if ctx.get("supertrend_direction"):
+        st_dir = "Bullish" if ctx["supertrend_direction"] == 1 else "Bearish"
+        indicators.append(f"Supertrend {st_dir}")
+    return indicators
+
+
 def _pnl_color(pnl: float) -> str:
     if pnl > 0:
         return "green"
@@ -213,8 +231,37 @@ def render_paper_trading_tab(
     st.subheader("Trade History")
     if state.trade_log:
         _render_trade_history(state)
+
+        # --- EOD Report Downloads ---
+        st.divider()
+        st.subheader("EOD Report")
+        _render_eod_downloads(state)
     else:
         st.caption("No trades yet. History will appear here after positions are closed.")
+
+
+def _render_eod_downloads(state: PaperTradingState) -> None:
+    """Render download buttons for the end-of-day trade report."""
+    from analyzers.eod_report import generate_eod_report, render_json, render_markdown
+
+    report = generate_eod_report(state)
+    date_str = report["date"]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            label="Download Markdown Report",
+            data=render_markdown(report),
+            file_name=f"nifty_trades_{date_str}.md",
+            mime="text/markdown",
+        )
+    with col2:
+        st.download_button(
+            label="Download JSON Report",
+            data=render_json(report),
+            file_name=f"nifty_trades_{date_str}.json",
+            mime="application/json",
+        )
 
 
 def _render_open_position_card(
@@ -259,21 +306,7 @@ def _render_open_position_card(
             if reasons:
                 st.markdown("**Why this trade:**")
                 st.markdown("  \n".join(f"- {r}" for r in reasons))
-            # Key entry indicators
-            ctx = pos.entry_context
-            indicators = []
-            if ctx.get("rsi"):
-                indicators.append(f"RSI {ctx['rsi']:.1f}")
-            if ctx.get("atm_iv"):
-                indicators.append(f"IV {ctx['atm_iv']:.1f}%")
-            if ctx.get("pcr"):
-                indicators.append(f"PCR {ctx['pcr']:.2f}")
-            if ctx.get("spot") and ctx.get("vwap"):
-                rel = "above" if ctx["spot"] > ctx["vwap"] else "below"
-                indicators.append(f"Spot {rel} VWAP")
-            if ctx.get("supertrend_direction"):
-                st_dir = "Bullish" if ctx["supertrend_direction"] == 1 else "Bearish"
-                indicators.append(f"Supertrend {st_dir}")
+            indicators = _format_context_indicators(pos.entry_context)
             if indicators:
                 st.caption("Entry: " + " | ".join(indicators))
 
@@ -393,11 +426,19 @@ def _render_trade_history(state: PaperTradingState) -> None:
             if leg_rows:
                 st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
 
-            # Entry reasoning
+            # Entry & exit context
             if t.entry_context and isinstance(t.entry_context, dict):
                 reasons = t.entry_context.get("strategy_reasoning", [])
                 if reasons:
                     st.markdown("**Entry reasoning:** " + " / ".join(reasons))
+                entry_indicators = _format_context_indicators(t.entry_context)
+                if entry_indicators:
+                    st.caption("Entry: " + " | ".join(entry_indicators))
+
+            if t.exit_context and isinstance(t.exit_context, dict):
+                exit_indicators = _format_context_indicators(t.exit_context)
+                if exit_indicators:
+                    st.caption("Exit: " + " | ".join(exit_indicators))
 
             # Inline critique
             if critique:

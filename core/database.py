@@ -226,18 +226,13 @@ class SentimentDatabase:
     def save_critique(self, critique, trade_record_dict: dict | None = None) -> None:
         """Save a TradeCritique and its parameter recommendations.
 
-        Qualifying recommendations (confidence >= threshold, drift <= max) are
-        auto-applied so the strategy evaluators pick them up on the next cycle.
+        Recommendations are stored as informational only (applied=0).
+        Use the EOD report to review aggregated recommendations.
         """
         from core.criticizer_models import TradeCritique
 
         if not isinstance(critique, TradeCritique):
             raise TypeError("Expected TradeCritique instance")
-
-        config = load_config()
-        tuning_cfg = config.get("options_desk", {}).get("trade_critique", {})
-        min_confidence = tuning_cfg.get("override_min_confidence", 0.7)
-        max_drift = tuning_cfg.get("max_parameter_drift_pct", 0.30)
 
         with self.SessionLocal() as session:
             row = TradeCritiqueRow(
@@ -258,7 +253,7 @@ class SentimentDatabase:
             )
             session.merge(row)
 
-            # Denormalized parameter adjustments — auto-apply qualifying ones
+            # Denormalized parameter adjustments — stored as informational only
             for rec in critique.parameter_recommendations:
                 adj = ParameterAdjustmentRow(
                     trade_id=critique.trade_id,
@@ -271,13 +266,6 @@ class SentimentDatabase:
                     condition=rec.condition,
                     applied=0,
                 )
-                if rec.confidence >= min_confidence:
-                    if rec.current_value == 0 or (
-                        abs(rec.recommended_value - rec.current_value)
-                        / abs(rec.current_value)
-                        <= max_drift
-                    ):
-                        adj.applied = 1
                 session.add(adj)
 
             session.commit()

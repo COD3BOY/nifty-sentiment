@@ -150,6 +150,11 @@ paper_trading:
     exchange_txn_pct: 0.00035
     gst_pct: 0.18
     stamp_duty_buy_pct: 0.00003
+  expiry_guards:
+    no_new_after_minutes_before_close: 30   # Don't open positions in last 30min on expiry day
+    min_leg_premium: 2.0                    # Skip legs with LTP < ₹2
+    min_net_premium_per_lot: 100            # Skip if |net premium| per lot < ₹100
+
   margin_estimates:
     short_straddle: 175000
     short_strangle: 155000

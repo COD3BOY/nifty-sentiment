@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from core.paper_trading_models import _now_ist
@@ -475,6 +475,68 @@ def close_position(
 
 
 # ---------------------------------------------------------------------------
+# Expiry-day guards
+# ---------------------------------------------------------------------------
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+_MARKET_CLOSE = time(15, 30)
+
+
+def _is_blocked_by_expiry_guards(
+    suggestion: TradeSuggestion,
+    chain: OptionChainData,
+    lot_size: int,
+) -> str | None:
+    """Return block reason if suggestion should be skipped, else None."""
+    cfg = _pt_cfg().get("expiry_guards", {})
+    if not cfg:
+        return None
+
+    now = datetime.now(_IST)
+
+    # --- Time cutoff on expiry day ---
+    cutoff_minutes = cfg.get("no_new_after_minutes_before_close", 0)
+    if cutoff_minutes and chain.expiry:
+        try:
+            expiry_date = datetime.strptime(chain.expiry, "%d-%b-%Y").date()
+        except ValueError:
+            expiry_date = None
+
+        if expiry_date and now.date() == expiry_date:
+            cutoff_time = (
+                datetime.combine(now.date(), _MARKET_CLOSE) - timedelta(minutes=cutoff_minutes)
+            ).time()
+            if now.time() >= cutoff_time:
+                return (
+                    f"expiry-day time cutoff: {now.strftime('%H:%M')} IST >= "
+                    f"{cutoff_time.strftime('%H:%M')} (close minus {cutoff_minutes}min)"
+                )
+
+    # --- Minimum leg premium ---
+    min_leg_premium = cfg.get("min_leg_premium", 0)
+    if min_leg_premium:
+        for leg in suggestion.legs:
+            if leg.ltp < min_leg_premium:
+                return (
+                    f"leg {leg.instrument} has LTP ₹{leg.ltp} < min ₹{min_leg_premium}"
+                )
+
+    # --- Minimum net premium per lot ---
+    min_net = cfg.get("min_net_premium_per_lot", 0)
+    if min_net:
+        net_per_lot = sum(
+            leg.ltp * (1 if leg.action == "SELL" else -1)
+            for leg in suggestion.legs
+        ) * lot_size
+        if abs(net_per_lot) < min_net:
+            return (
+                f"|net premium/lot| ₹{abs(net_per_lot):.1f} < min ₹{min_net}"
+            )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main loop — called every refresh cycle
 # ---------------------------------------------------------------------------
 
@@ -570,6 +632,10 @@ def evaluate_and_manage(
 
         for suggestion in suggestions:
             if suggestion.score < min_score:
+                continue
+            block_reason = _is_blocked_by_expiry_guards(suggestion, chain, lot_size)
+            if block_reason:
+                logger.info("Suggestion blocked: %s — %s", suggestion.strategy.value, block_reason)
                 continue
             if suggestion.strategy.value in held_strategies:
                 continue
