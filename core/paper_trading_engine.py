@@ -501,7 +501,6 @@ def evaluate_and_manage(
 
     cfg = _pt_cfg()
     min_score = cfg.get("min_score_to_trade", 30)
-    max_positions = cfg.get("max_positions", 5)
 
     # --- Phase 1: Manage existing positions ---
     still_open: list[PaperPosition] = []
@@ -564,15 +563,12 @@ def evaluate_and_manage(
         state.is_auto_trading
         and suggestions
         and chain
-        and len(state.open_positions) < max_positions
     ):
         # Track held strategy types to avoid duplicates
         held_strategies = {p.strategy for p in state.open_positions}
         opened_any = False
 
         for suggestion in suggestions:
-            if len(state.open_positions) >= max_positions:
-                break
             if suggestion.score < min_score:
                 continue
             if suggestion.strategy.value in held_strategies:
