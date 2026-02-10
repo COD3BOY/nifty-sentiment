@@ -30,7 +30,7 @@ class PositionLeg(BaseModel):
     strike: float
     option_type: str  # "CE" or "PE"
     lots: int = 1
-    lot_size: int = 25
+    lot_size: int = 65
     entry_ltp: float
     current_ltp: float
 
@@ -61,6 +61,7 @@ class PaperPosition(BaseModel):
     stop_loss_amount: float = 0.0
     profit_target_amount: float = 0.0
     execution_cost: float = 0.0
+    margin_required: float = 0.0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -85,6 +86,7 @@ class TradeRecord(BaseModel):
     realized_pnl: float
     execution_cost: float = 0.0
     net_pnl: float = 0.0
+    margin_required: float = 0.0
     net_premium: float
     stop_loss_amount: float
     profit_target_amount: float
@@ -93,7 +95,7 @@ class TradeRecord(BaseModel):
 class PaperTradingState(BaseModel):
     """Root container for paper trading session state."""
 
-    initial_capital: float = 100_000.0
+    initial_capital: float = 2_500_000.0
     current_position: PaperPosition | None = None
     trade_log: list[TradeRecord] = Field(default_factory=list)
     total_realized_pnl: float = 0.0

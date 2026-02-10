@@ -41,6 +41,8 @@ def _get_engine() -> OptionsDeskEngine:
 
 def _is_market_hours() -> bool:
     now = datetime.now(IST)
+    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
     start = now.replace(hour=9, minute=15, second=0, microsecond=0)
     end = now.replace(hour=15, minute=30, second=0, microsecond=0)
     return start <= now <= end
@@ -55,6 +57,28 @@ def _last_refresh_text(ts: float) -> str:
     return f"{elapsed // 60}m {elapsed % 60}s ago"
 
 
+def _render_market_status_banner() -> None:
+    now = datetime.now(IST)
+    is_open = _is_market_hours()
+    last_ts = st.session_state.options_last_refresh
+
+    if is_open:
+        refresh_text = _last_refresh_text(last_ts) if last_ts > 0 else "fetching..."
+        st.success(f"Market Open  |  Auto-refreshing every 60s  |  Last updated: {refresh_text}")
+    else:
+        if now.weekday() >= 5:
+            context = "Weekend"
+        elif now.hour < 9 or (now.hour == 9 and now.minute < 15):
+            context = "Pre-market"
+        else:
+            context = "Post-market"
+
+        if last_ts > 0:
+            st.info(f"Market Closed ({context})  |  Showing last available data  |  Data from: {_last_refresh_text(last_ts)}")
+        else:
+            st.info(f"Market Closed ({context})  |  Loading last available data...")
+
+
 def render_options_desk_tab() -> None:
     """Main entry point — renders the full Options Desk tab."""
     engine = _get_engine()
@@ -65,38 +89,32 @@ def render_options_desk_tab() -> None:
     if "options_last_refresh" not in st.session_state:
         st.session_state.options_last_refresh = 0.0
 
-    # --- Standardized header ---
-    _h1, _h2 = st.columns([4, 1.5])
-    with _h1:
-        st.title("⚡ Intraday Options Desk")
-        auto_status = "ON (60s)" if _is_market_hours() else "OFF (outside market hours)"
-        st.caption(f"Option chain analytics, technical indicators & aggregated signals | Auto-refresh: {auto_status}")
-    with _h2:
-        manual_refresh = st.button("Refresh Data", key="options_refresh", type="primary", use_container_width=True)
-        st.caption(f"Last refresh: {_last_refresh_text(st.session_state.options_last_refresh)}")
+    # --- Header ---
+    st.title("Intraday Options Desk")
+    st.caption("Option chain analytics, technical indicators & aggregated signals")
 
-    if manual_refresh:
-        with st.spinner("Fetching options desk data..."):
-            st.session_state.options_snapshot = engine.fetch_snapshot()
-            st.session_state.options_last_refresh = time.time()
-        st.rerun()
-
-    # Auto-refresh during market hours — st_autorefresh triggers a rerun every 60s
+    # --- Auto-refresh during market hours ---
     if _is_market_hours():
         st_autorefresh(interval=60_000, key="options_desk_autorefresh")
 
-    if (
-        _is_market_hours()
-        and st.session_state.options_last_refresh > 0
-        and time.time() - st.session_state.options_last_refresh > 60
-    ):
-        st.session_state.options_snapshot = engine.fetch_snapshot()
-        st.session_state.options_last_refresh = time.time()
-        st.rerun()
+    # --- Fetch: auto on first load, re-fetch every ~60s during market hours ---
+    need_fetch = False
+    if st.session_state.options_snapshot is None:
+        need_fetch = True  # first load — always fetch regardless of market hours
+    elif _is_market_hours() and time.time() - st.session_state.options_last_refresh > 55:
+        need_fetch = True  # 55s threshold avoids edge-case with 60s timer
+
+    if need_fetch:
+        with st.spinner("Fetching options data..."):
+            st.session_state.options_snapshot = engine.fetch_snapshot()
+            st.session_state.options_last_refresh = time.time()
+
+    # --- Market status banner (after fetch so timestamp is current) ---
+    _render_market_status_banner()
 
     snap = st.session_state.options_snapshot
     if snap is None:
-        st.info("Click **Refresh Data** to fetch the latest options desk snapshot.")
+        st.info("Unable to fetch options data. NSE may be unreachable.")
         return
 
     # Show errors as warnings (deduplicate)

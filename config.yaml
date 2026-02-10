@@ -126,14 +126,14 @@ options_desk:
     iv_high: 18
     iv_low: 10
   trade_suggestions:
-    lot_size: 25
+    lot_size: 65
     otm_offset: 2
     spread_width: 2
     min_score: 20
 
 paper_trading:
-  initial_capital: 100000
-  lot_size: 25
+  initial_capital: 2500000
+  lot_size: 65
   auto_execute: true
   min_score_to_trade: 30
   max_lots: 4
@@ -146,15 +146,18 @@ paper_trading:
     debit_pct: 0.50
   execution_cost:
     brokerage_per_order: 20
-    stt_sell_pct: 0.0015
+    stt_sell_pct: 0.001
+    exchange_txn_pct: 0.00035
+    gst_pct: 0.18
+    stamp_duty_buy_pct: 0.00003
   margin_estimates:
-    short_straddle: 100000
-    short_strangle: 100000
-    bull_put_spread: 30000
-    bear_call_spread: 30000
+    short_straddle: 175000
+    short_strangle: 155000
+    bull_put_spread: 35000
+    bear_call_spread: 35000
     bull_call_spread: 0
     bear_put_spread: 0
-    iron_condor: 60000
+    iron_condor: 40000
     long_call_ce: 0
     long_put_pe: 0
     long_straddle: 0

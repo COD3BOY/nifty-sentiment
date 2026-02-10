@@ -86,10 +86,11 @@ def render_paper_trading_tab(
     st.divider()
 
     # --- Capital metrics ---
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
+    margin_in_use = state.current_position.margin_required if state.current_position else 0.0
+    cap_cols = st.columns(7)
+    with cap_cols[0]:
         st.metric("Initial Capital", f"\u20b9{state.initial_capital:,.0f}")
-    with c2:
+    with cap_cols[1]:
         net_rpnl = state.net_realized_pnl
         st.metric(
             "Net Realized P&L",
@@ -97,7 +98,7 @@ def render_paper_trading_tab(
             delta=_fmt_pnl(net_rpnl) if net_rpnl != 0 else None,
             delta_color="normal" if net_rpnl >= 0 else "inverse",
         )
-    with c3:
+    with cap_cols[2]:
         unr = state.unrealized_pnl
         st.metric(
             "Unrealized P&L",
@@ -105,12 +106,14 @@ def render_paper_trading_tab(
             delta=_fmt_pnl(unr) if unr != 0 else None,
             delta_color="normal" if unr >= 0 else "inverse",
         )
-    with c4:
+    with cap_cols[3]:
         net_cap = state.capital_remaining + state.unrealized_pnl
         st.metric("Net Capital", f"\u20b9{net_cap:,.0f}")
-    with c5:
+    with cap_cols[4]:
+        st.metric("Margin in Use", f"\u20b9{margin_in_use:,.0f}")
+    with cap_cols[5]:
         st.metric("Total Costs", f"\u20b9{state.total_execution_costs:,.0f}")
-    with c6:
+    with cap_cols[6]:
         trades = len(state.trade_log)
         wr = state.win_rate
         st.metric("Trades / Win Rate", f"{trades} / {wr:.0f}%")
@@ -165,8 +168,8 @@ def _render_open_position(state: PaperTradingState) -> None:
         })
     st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
 
-    # P&L and risk params
-    pnl_col, sl_col, pt_col, cost_col, btn_col = st.columns([2, 1, 1, 1, 1])
+    # P&L row
+    pnl_col, btn_col = st.columns([5, 1])
     with pnl_col:
         pnl = pos.total_unrealized_pnl
         color = _pnl_color(pnl)
@@ -175,12 +178,6 @@ def _render_open_position(state: PaperTradingState) -> None:
             f'Unrealized P&L: {_fmt_pnl(pnl)}</div>',
             unsafe_allow_html=True,
         )
-    with sl_col:
-        st.metric("Stop Loss", f"\u20b9{pos.stop_loss_amount:,.0f}")
-    with pt_col:
-        st.metric("Profit Target", f"\u20b9{pos.profit_target_amount:,.0f}")
-    with cost_col:
-        st.metric("Est. Cost", f"\u20b9{pos.execution_cost:,.0f}")
     with btn_col:
         if st.button("Close Position", key="manual_close_btn", type="secondary", use_container_width=True):
             closed_pos, record = close_position(pos, PositionStatus.CLOSED_MANUAL)
@@ -196,6 +193,21 @@ def _render_open_position(state: PaperTradingState) -> None:
             _set_state(new_state)
             st.rerun()
 
+    # Trade economics row
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        st.metric("Net Premium", f"\u20b9{pos.net_premium:,.0f}")
+    with m2:
+        st.metric("Margin Required", f"\u20b9{pos.margin_required:,.0f}")
+    with m3:
+        st.metric("Est. Cost", f"\u20b9{pos.execution_cost:,.0f}")
+    with m4:
+        st.metric("Stop Loss", f"\u20b9{pos.stop_loss_amount:,.0f}")
+    with m5:
+        cap = state.capital_remaining
+        util_pct = (pos.margin_required / cap * 100) if cap > 0 else 0.0
+        st.metric("Capital Utilization", f"{util_pct:.1f}%")
+
 
 def _render_trade_history(state: PaperTradingState) -> None:
     """Render closed trade history as a table."""
@@ -209,6 +221,8 @@ def _render_trade_history(state: PaperTradingState) -> None:
             "Entry": t.entry_time.strftime("%H:%M:%S"),
             "Exit": t.exit_time.strftime("%H:%M:%S"),
             "Exit Reason": _exit_reason_label(t.exit_reason),
+            "Premium": _fmt_pnl(t.net_premium),
+            "Margin": f"\u20b9{t.margin_required:,.0f}",
             "Gross P&L": _fmt_pnl(t.realized_pnl),
             "Cost": f"\u20b9{t.execution_cost:,.0f}",
             "Net P&L": _fmt_pnl(t.net_pnl),

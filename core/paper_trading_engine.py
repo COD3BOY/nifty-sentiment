@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 
 from core.config import load_config
+from core.kite_margins import get_kite_charges, get_kite_margin
 from core.options_models import (
     OptionChainData,
     StrategyName,
@@ -153,20 +154,38 @@ def compute_lots(
     available_capital: float,
     lot_size: int,
     suggestion: TradeSuggestion,
-) -> int:
+    expiry: str | None = None,
+) -> tuple[int, float]:
     """Compute how many lots to trade based on capital and margin requirements.
 
-    For credit/margin strategies: uses margin_estimates from config.
+    Tries Kite basket_order_margins for 1-lot SPAN margin first; falls back
+    to static margin_estimates from config.
     For debit strategies (margin=0 in config): uses premium paid per lot as margin.
     Clamps to [1, max_lots].
+
+    Returns (lots, margin_per_lot).
     """
     cfg = _pt_cfg()
     max_lots = cfg.get("max_lots", 4)
     utilization = cfg.get("capital_utilization", 0.70)
-    margin_estimates = cfg.get("margin_estimates", {})
 
-    key = _strategy_margin_key(strategy)
-    margin_per_lot = margin_estimates.get(key, 0)
+    margin_per_lot: float = 0
+
+    # Try Kite SPAN margin for 1 lot
+    if expiry:
+        legs_dicts = [
+            {"action": leg.action, "strike": leg.strike, "option_type": leg.option_type, "ltp": leg.ltp}
+            for leg in suggestion.legs
+        ]
+        kite_margin = get_kite_margin(legs_dicts, expiry, lots=1, lot_size=lot_size)
+        if kite_margin is not None:
+            margin_per_lot = kite_margin
+
+    # Fallback to static estimates
+    if margin_per_lot == 0:
+        margin_estimates = cfg.get("margin_estimates", {})
+        key = _strategy_margin_key(strategy)
+        margin_per_lot = margin_estimates.get(key, 0)
 
     if margin_per_lot == 0:
         # Debit strategy — use premium paid per lot as "margin"
@@ -175,7 +194,7 @@ def compute_lots(
 
     usable_capital = available_capital * utilization
     lots = max(1, min(max_lots, math.floor(usable_capital / margin_per_lot)))
-    return lots
+    return lots, margin_per_lot
 
 
 def compute_execution_cost(
@@ -183,28 +202,64 @@ def compute_execution_cost(
     suggestion: TradeSuggestion,
     lot_size: int,
     lots: int,
+    expiry: str | None = None,
 ) -> float:
     """Compute estimated execution cost for a round-trip trade.
 
-    Cost = (num_legs × 2 orders × brokerage) + (STT on sell-side premium).
+    Tries Kite virtual contract note first; falls back to static formula
+    that includes brokerage, STT, exchange txn charges, GST, and stamp duty.
     """
+    # Try Kite charges API first
+    if expiry:
+        legs_dicts = [
+            {"action": leg.action, "strike": leg.strike, "option_type": leg.option_type, "ltp": leg.ltp}
+            for leg in suggestion.legs
+        ]
+        kite_charges = get_kite_charges(legs_dicts, expiry, lots, lot_size)
+        if kite_charges is not None:
+            return kite_charges
+
+    # Static fallback with all charge components
     cfg = _pt_cfg()
     cost_cfg = cfg.get("execution_cost", {})
     brokerage_per_order = cost_cfg.get("brokerage_per_order", 20)
-    stt_sell_pct = cost_cfg.get("stt_sell_pct", 0.0015)
+    stt_sell_pct = cost_cfg.get("stt_sell_pct", 0.001)
+    exchange_txn_pct = cost_cfg.get("exchange_txn_pct", 0.00035)
+    gst_pct = cost_cfg.get("gst_pct", 0.18)
+    stamp_duty_buy_pct = cost_cfg.get("stamp_duty_buy_pct", 0.00003)
 
     # Brokerage: each leg has an entry and exit order
     brokerage = num_legs * 2 * brokerage_per_order
 
-    # STT: charged on sell-side premium (both SELL legs at entry and BUY legs at exit)
-    sell_premium = sum(
+    # Turnover by side
+    sell_turnover = sum(
         leg.ltp * lots * lot_size
         for leg in suggestion.legs
         if leg.action == "SELL"
     )
-    stt = sell_premium * stt_sell_pct
+    buy_turnover = sum(
+        leg.ltp * lots * lot_size
+        for leg in suggestion.legs
+        if leg.action == "BUY"
+    )
+    # Round-trip: entry sells + exit sells (BUY legs close via sell at exit)
+    total_sell_turnover = sell_turnover + buy_turnover
+    total_turnover = (sell_turnover + buy_turnover) * 2  # entry + exit
 
-    return brokerage + stt
+    # STT on all sell transactions (entry SELL legs + exit of BUY legs)
+    stt = total_sell_turnover * stt_sell_pct
+
+    # Exchange transaction charges on total round-trip turnover
+    exchange_txn = total_turnover * exchange_txn_pct
+
+    # GST on brokerage + exchange charges
+    gst = (brokerage + exchange_txn) * gst_pct
+
+    # Stamp duty on buy-side turnover (entry BUY legs + exit of SELL legs)
+    total_buy_turnover = sell_turnover + buy_turnover  # mirrors sell side
+    stamp_duty = total_buy_turnover * stamp_duty_buy_pct
+
+    return brokerage + stt + exchange_txn + gst + stamp_duty
 
 
 # ---------------------------------------------------------------------------
@@ -212,22 +267,28 @@ def compute_execution_cost(
 # ---------------------------------------------------------------------------
 
 def open_position(
-    suggestion: TradeSuggestion, lot_size: int, available_capital: float | None = None,
+    suggestion: TradeSuggestion,
+    lot_size: int,
+    available_capital: float | None = None,
+    expiry: str | None = None,
 ) -> PaperPosition:
     """Create a new paper position from a trade suggestion."""
     strategy_type = classify_strategy(suggestion.strategy)
 
     # Position sizing
     if available_capital is not None:
-        lots = compute_lots(suggestion.strategy, available_capital, lot_size, suggestion)
+        lots, margin_per_lot = compute_lots(
+            suggestion.strategy, available_capital, lot_size, suggestion, expiry=expiry,
+        )
     else:
         lots = 1
+        margin_per_lot = 0.0
 
     net_premium, sl, pt = compute_risk_params(suggestion, lot_size, lots)
 
     # Execution cost
     num_legs = len(suggestion.legs)
-    exec_cost = compute_execution_cost(num_legs, suggestion, lot_size, lots)
+    exec_cost = compute_execution_cost(num_legs, suggestion, lot_size, lots, expiry=expiry)
 
     legs = [
         PositionLeg(
@@ -255,6 +316,7 @@ def open_position(
         stop_loss_amount=sl,
         profit_target_amount=pt,
         execution_cost=exec_cost,
+        margin_required=margin_per_lot * lots,
     )
 
 
@@ -336,6 +398,7 @@ def close_position(
         realized_pnl=gross_pnl,
         execution_cost=position.execution_cost,
         net_pnl=gross_pnl - position.execution_cost,
+        margin_required=position.margin_required,
         net_premium=position.net_premium,
         stop_loss_amount=position.stop_loss_amount,
         profit_target_amount=position.profit_target_amount,
@@ -411,7 +474,10 @@ def evaluate_and_manage(
         # Pick the best suggestion that meets the minimum score
         for suggestion in suggestions:
             if suggestion.score >= min_score:
-                position = open_position(suggestion, lot_size, state.capital_remaining)
+                position = open_position(
+                    suggestion, lot_size, state.capital_remaining,
+                    expiry=chain.expiry if chain else None,
+                )
                 logger.info(
                     "Paper trade opened: %s | bias=%s | score=%.1f | lots=%d | premium=%.2f | cost=%.2f",
                     position.strategy, position.direction_bias,
