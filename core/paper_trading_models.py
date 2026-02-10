@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from enum import Enum
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now_ist() -> datetime:
+    return datetime.now(_IST)
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
@@ -54,7 +60,7 @@ class PaperPosition(BaseModel):
     score: float
     legs: list[PositionLeg]
     lots: int = 1
-    entry_time: datetime = Field(default_factory=datetime.utcnow)
+    entry_time: datetime = Field(default_factory=_now_ist)
     exit_time: datetime | None = None
     status: PositionStatus = PositionStatus.OPEN
     net_premium: float = 0.0
@@ -62,6 +68,9 @@ class PaperPosition(BaseModel):
     profit_target_amount: float = 0.0
     execution_cost: float = 0.0
     margin_required: float = 0.0
+    entry_context: dict | None = None  # serialized MarketContextSnapshot
+    peak_pnl: float = 0.0      # best unrealized PnL during hold
+    trough_pnl: float = 0.0    # worst unrealized PnL during hold
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -90,6 +99,12 @@ class TradeRecord(BaseModel):
     net_premium: float
     stop_loss_amount: float
     profit_target_amount: float
+    entry_context: dict | None = None   # serialized MarketContextSnapshot
+    exit_context: dict | None = None
+    spot_at_entry: float = 0.0
+    spot_at_exit: float = 0.0
+    max_drawdown: float = 0.0          # abs(trough_pnl)
+    max_favorable: float = 0.0         # peak_pnl
 
 
 class PaperTradingState(BaseModel):
@@ -102,6 +117,7 @@ class PaperTradingState(BaseModel):
     total_execution_costs: float = 0.0
     is_auto_trading: bool = True
     last_open_refresh_ts: float = 0.0  # prevents re-open on same refresh cycle
+    pending_critiques: list[str] = Field(default_factory=list)  # trade IDs awaiting critique
 
     @model_validator(mode="before")
     @classmethod

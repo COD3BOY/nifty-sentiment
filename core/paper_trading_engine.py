@@ -12,11 +12,15 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from core.paper_trading_models import _now_ist
+
 from core.config import load_config
 from core.kite_margins import get_kite_charges, get_kite_margin
 from core.options_models import (
     OptionChainData,
+    OptionsAnalytics,
     StrategyName,
+    TechnicalIndicators,
     TradeSuggestion,
 )
 from core.paper_trading_models import (
@@ -27,6 +31,7 @@ from core.paper_trading_models import (
     StrategyType,
     TradeRecord,
 )
+from core.trade_context import MarketContextSnapshot, build_leg_contexts
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +284,9 @@ def open_position(
     lot_size: int,
     available_capital: float | None = None,
     expiry: str | None = None,
+    technicals: TechnicalIndicators | None = None,
+    analytics: OptionsAnalytics | None = None,
+    chain: OptionChainData | None = None,
 ) -> PaperPosition:
     """Create a new paper position from a trade suggestion."""
     strategy_type = classify_strategy(suggestion.strategy)
@@ -312,6 +320,25 @@ def open_position(
         for leg in suggestion.legs
     ]
 
+    # Build entry context snapshot
+    entry_context_dict = None
+    if technicals or analytics:
+        leg_ctxs = None
+        if chain:
+            leg_dicts = [
+                {"strike": leg.strike, "option_type": leg.option_type, "ltp": leg.ltp}
+                for leg in suggestion.legs
+            ]
+            leg_ctxs = build_leg_contexts(chain, leg_dicts)
+        ctx = MarketContextSnapshot.from_snapshot_data(
+            technicals=technicals,
+            analytics=analytics,
+            leg_contexts=leg_ctxs,
+            score=suggestion.score,
+            reasoning=list(suggestion.reasoning),
+        )
+        entry_context_dict = ctx.model_dump(mode="json")
+
     return PaperPosition(
         strategy=suggestion.strategy.value,
         strategy_type=strategy_type,
@@ -325,6 +352,7 @@ def open_position(
         profit_target_amount=pt,
         execution_cost=exec_cost,
         margin_required=total_margin,
+        entry_context=entry_context_dict,
     )
 
 
@@ -373,13 +401,38 @@ def check_exit_conditions(position: PaperPosition) -> PositionStatus | None:
 
 
 def close_position(
-    position: PaperPosition, reason: PositionStatus,
+    position: PaperPosition,
+    reason: PositionStatus,
+    technicals: TechnicalIndicators | None = None,
+    analytics: OptionsAnalytics | None = None,
+    chain: OptionChainData | None = None,
 ) -> tuple[PaperPosition, TradeRecord]:
     """Close a position and create an immutable trade record."""
-    now = datetime.utcnow()
+    now = _now_ist()
     closed_position = position.model_copy(
         update={"status": reason, "exit_time": now},
     )
+
+    # Build exit context snapshot
+    exit_context_dict = None
+    if technicals or analytics:
+        leg_ctxs = None
+        if chain:
+            leg_dicts = [
+                {"strike": leg.strike, "option_type": leg.option_type, "ltp": leg.current_ltp}
+                for leg in position.legs
+            ]
+            leg_ctxs = build_leg_contexts(chain, leg_dicts)
+        ctx = MarketContextSnapshot.from_snapshot_data(
+            technicals=technicals, analytics=analytics, leg_contexts=leg_ctxs,
+        )
+        exit_context_dict = ctx.model_dump(mode="json")
+
+    # Extract spot prices from contexts
+    spot_at_entry = 0.0
+    if position.entry_context and isinstance(position.entry_context, dict):
+        spot_at_entry = position.entry_context.get("spot", 0.0)
+    spot_at_exit = technicals.spot if technicals else 0.0
 
     gross_pnl = position.total_unrealized_pnl
     record = TradeRecord(
@@ -410,6 +463,12 @@ def close_position(
         net_premium=position.net_premium,
         stop_loss_amount=position.stop_loss_amount,
         profit_target_amount=position.profit_target_amount,
+        entry_context=position.entry_context,
+        exit_context=exit_context_dict,
+        spot_at_entry=spot_at_entry,
+        spot_at_exit=spot_at_exit,
+        max_drawdown=abs(position.trough_pnl),
+        max_favorable=position.peak_pnl,
     )
 
     return closed_position, record
@@ -423,6 +482,8 @@ def evaluate_and_manage(
     state: PaperTradingState,
     suggestions: list[TradeSuggestion] | None,
     chain: OptionChainData | None,
+    technicals: TechnicalIndicators | None = None,
+    analytics: OptionsAnalytics | None = None,
     lot_size: int | None = None,
     refresh_ts: float = 0.0,
 ) -> PaperTradingState:
@@ -447,6 +508,7 @@ def evaluate_and_manage(
     new_records: list[TradeRecord] = []
     added_realized = 0.0
     added_costs = 0.0
+    new_pending_critiques: list[str] = []
 
     for position in state.open_positions:
         if position.status != PositionStatus.OPEN:
@@ -456,10 +518,20 @@ def evaluate_and_manage(
         if chain:
             position = update_position_ltp(position, chain)
 
+        # Track peak/trough PnL
+        pnl = position.total_unrealized_pnl
+        position = position.model_copy(update={
+            "peak_pnl": max(position.peak_pnl, pnl),
+            "trough_pnl": min(position.trough_pnl, pnl),
+        })
+
         # Check exit conditions
         exit_reason = check_exit_conditions(position)
         if exit_reason:
-            _closed_pos, record = close_position(position, exit_reason)
+            _closed_pos, record = close_position(
+                position, exit_reason,
+                technicals=technicals, analytics=analytics, chain=chain,
+            )
             logger.info(
                 "Paper trade closed: %s | reason=%s | pnl=%.2f | cost=%.2f | net=%.2f",
                 record.strategy, exit_reason.value, record.realized_pnl,
@@ -468,6 +540,9 @@ def evaluate_and_manage(
             new_records.append(record)
             added_realized += record.realized_pnl
             added_costs += record.execution_cost
+            # Queue for critique if entry context was captured
+            if record.entry_context:
+                new_pending_critiques.append(record.id)
         else:
             still_open.append(position)
 
@@ -480,6 +555,7 @@ def evaluate_and_manage(
             "total_execution_costs": state.total_execution_costs + added_costs,
             # If any positions were closed, gate re-open to next cycle
             "last_open_refresh_ts": refresh_ts if new_records else state.last_open_refresh_ts,
+            "pending_critiques": state.pending_critiques + new_pending_critiques,
         },
     )
 
@@ -508,6 +584,7 @@ def evaluate_and_manage(
             position = open_position(
                 suggestion, lot_size, state.capital_remaining,
                 expiry=chain.expiry,
+                technicals=technicals, analytics=analytics, chain=chain,
             )
             logger.info(
                 "Paper trade opened: %s | bias=%s | score=%.1f | lots=%d | margin=%.0f | premium=%.2f | cost=%.2f",

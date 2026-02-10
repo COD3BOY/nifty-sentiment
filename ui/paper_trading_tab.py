@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import streamlit as st
 
 from core.config import load_config
-from core.options_models import OptionChainData, TradeSuggestion
+from core.options_models import OptionChainData, OptionsAnalytics, TechnicalIndicators, TradeSuggestion
 from core.paper_trading_engine import close_position, evaluate_and_manage, load_state, save_state
 from core.paper_trading_models import (
     PaperPosition,
     PaperTradingState,
     PositionStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _get_state() -> PaperTradingState:
@@ -60,6 +64,8 @@ def _exit_reason_label(status: PositionStatus) -> str:
 def render_paper_trading_tab(
     suggestions: list[TradeSuggestion] | None,
     chain: OptionChainData | None,
+    technicals: TechnicalIndicators | None = None,
+    analytics: OptionsAnalytics | None = None,
 ) -> None:
     """Main entry point for the Paper Trading tab."""
     state = _get_state()
@@ -69,9 +75,16 @@ def render_paper_trading_tab(
     lot_size = cfg.get("lot_size", 25)
     refresh_ts = st.session_state.get("options_last_refresh", 0.0)
 
-    new_state = evaluate_and_manage(state, suggestions, chain, lot_size, refresh_ts=refresh_ts)
+    new_state = evaluate_and_manage(
+        state, suggestions, chain,
+        technicals=technicals, analytics=analytics,
+        lot_size=lot_size, refresh_ts=refresh_ts,
+    )
     _set_state(new_state)
     state = new_state
+
+    # --- Process one pending critique per cycle (non-blocking) ---
+    state = _process_pending_critique(state)
 
     # --- Header row ---
     h1, h2 = st.columns([4, 1.5])
@@ -94,6 +107,7 @@ def render_paper_trading_tab(
                 is_auto_trading=cfg.get("auto_execute", True),
             )
             _set_state(fresh)
+            _clear_critiques_db()
             st.rerun()
 
     st.divider()
@@ -144,11 +158,17 @@ def render_paper_trading_tab(
                 new_records = []
                 added_realized = 0.0
                 added_costs = 0.0
+                pending_ids = []
                 for p in open_pos:
-                    _, record = close_position(p, PositionStatus.CLOSED_MANUAL)
+                    _, record = close_position(
+                        p, PositionStatus.CLOSED_MANUAL,
+                        technicals=technicals, analytics=analytics, chain=chain,
+                    )
                     new_records.append(record)
                     added_realized += record.realized_pnl
                     added_costs += record.execution_cost
+                    if record.entry_context:
+                        pending_ids.append(record.id)
                 new_state = state.model_copy(
                     update={
                         "open_positions": [],
@@ -156,12 +176,13 @@ def render_paper_trading_tab(
                         "total_realized_pnl": state.total_realized_pnl + added_realized,
                         "total_execution_costs": state.total_execution_costs + added_costs,
                         "last_open_refresh_ts": st.session_state.get("options_last_refresh", 0.0),
+                        "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
                 _set_state(new_state)
                 st.rerun()
         for pos in open_pos:
-            _render_open_position_card(state, pos)
+            _render_open_position_card(state, pos, technicals=technicals, analytics=analytics, chain=chain)
     else:
         if state.is_auto_trading:
             st.info("No open positions. Auto-trading is ON — new positions will open on the next Options Desk refresh.")
@@ -177,7 +198,13 @@ def render_paper_trading_tab(
         st.caption("No trades yet. History will appear here after positions are closed.")
 
 
-def _render_open_position_card(state: PaperTradingState, pos: PaperPosition) -> None:
+def _render_open_position_card(
+    state: PaperTradingState,
+    pos: PaperPosition,
+    technicals: TechnicalIndicators | None = None,
+    analytics: OptionsAnalytics | None = None,
+    chain: OptionChainData | None = None,
+) -> None:
     """Render a single open position as an expander card."""
     pnl = pos.total_unrealized_pnl
     label = f"{pos.strategy} | {pos.direction_bias} | {pos.lots} lots | {_fmt_pnl(pnl)}"
@@ -207,6 +234,30 @@ def _render_open_position_card(state: PaperTradingState, pos: PaperPosition) -> 
             })
         st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
 
+        # Entry reasoning
+        if pos.entry_context and isinstance(pos.entry_context, dict):
+            reasons = pos.entry_context.get("strategy_reasoning", [])
+            if reasons:
+                st.markdown("**Why this trade:**")
+                st.markdown("  \n".join(f"- {r}" for r in reasons))
+            # Key entry indicators
+            ctx = pos.entry_context
+            indicators = []
+            if ctx.get("rsi"):
+                indicators.append(f"RSI {ctx['rsi']:.1f}")
+            if ctx.get("atm_iv"):
+                indicators.append(f"IV {ctx['atm_iv']:.1f}%")
+            if ctx.get("pcr"):
+                indicators.append(f"PCR {ctx['pcr']:.2f}")
+            if ctx.get("spot") and ctx.get("vwap"):
+                rel = "above" if ctx["spot"] > ctx["vwap"] else "below"
+                indicators.append(f"Spot {rel} VWAP")
+            if ctx.get("supertrend_direction"):
+                st_dir = "Bullish" if ctx["supertrend_direction"] == 1 else "Bearish"
+                indicators.append(f"Supertrend {st_dir}")
+            if indicators:
+                st.caption("Entry: " + " | ".join(indicators))
+
         # P&L row
         pnl_col, btn_col = st.columns([5, 1])
         with pnl_col:
@@ -218,8 +269,12 @@ def _render_open_position_card(state: PaperTradingState, pos: PaperPosition) -> 
             )
         with btn_col:
             if st.button("Close", key=f"close_{pos.id}", type="secondary", use_container_width=True):
-                _, record = close_position(pos, PositionStatus.CLOSED_MANUAL)
+                _, record = close_position(
+                    pos, PositionStatus.CLOSED_MANUAL,
+                    technicals=technicals, analytics=analytics, chain=chain,
+                )
                 remaining = [p for p in state.open_positions if p.id != pos.id]
+                pending_ids = [record.id] if record.entry_context else []
                 new_state = state.model_copy(
                     update={
                         "open_positions": remaining,
@@ -227,6 +282,7 @@ def _render_open_position_card(state: PaperTradingState, pos: PaperPosition) -> 
                         "total_realized_pnl": state.total_realized_pnl + record.realized_pnl,
                         "total_execution_costs": state.total_execution_costs + record.execution_cost,
                         "last_open_refresh_ts": st.session_state.get("options_last_refresh", 0.0),
+                        "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
                 _set_state(new_state)
@@ -249,21 +305,206 @@ def _render_open_position_card(state: PaperTradingState, pos: PaperPosition) -> 
 
 
 def _render_trade_history(state: PaperTradingState) -> None:
-    """Render closed trade history as a table."""
-    rows = []
+    """Render closed trade history as expandable cards with inline critiques."""
+    # Load all critiques from DB, keyed by trade_id
+    critique_map: dict[str, dict] = {}
+    try:
+        from core.database import SentimentDatabase
+        db = SentimentDatabase()
+        for c in db.get_all_critiques(limit=100):
+            critique_map[c["trade_id"]] = c
+    except Exception:
+        pass
+
     for i, t in enumerate(reversed(state.trade_log), 1):
-        rows.append({
-            "#": i,
-            "Strategy": t.strategy,
-            "Lots": t.lots,
-            "Bias": t.direction_bias,
-            "Entry": t.entry_time.strftime("%H:%M:%S"),
-            "Exit": t.exit_time.strftime("%H:%M:%S"),
-            "Exit Reason": _exit_reason_label(t.exit_reason),
-            "Premium": _fmt_pnl(t.net_premium),
-            "Margin": f"\u20b9{t.margin_required:,.0f}",
-            "Gross P&L": _fmt_pnl(t.realized_pnl),
-            "Cost": f"\u20b9{t.execution_cost:,.0f}",
-            "Net P&L": _fmt_pnl(t.net_pnl),
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        critique = critique_map.get(t.id)
+        grade_tag = ""
+        if critique:
+            grade = critique["overall_grade"]
+            color = _GRADE_COLORS.get(grade, "#94a3b8")
+            grade_tag = f" | {grade.upper()}"
+
+        pnl_sign = "+" if t.net_pnl > 0 else ""
+        label = (
+            f"#{i} {t.strategy} | {t.direction_bias} | {t.lots}L | "
+            f"{_exit_reason_label(t.exit_reason)} | "
+            f"{pnl_sign}\u20b9{t.net_pnl:,.0f}{grade_tag}"
+        )
+        with st.expander(label, expanded=False):
+            # Trade summary metrics
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            with c1:
+                st.metric("Entry", t.entry_time.strftime("%H:%M:%S"))
+            with c2:
+                st.metric("Exit", t.exit_time.strftime("%H:%M:%S"))
+            with c3:
+                st.metric("Premium", _fmt_pnl(t.net_premium))
+            with c4:
+                st.metric("Gross P&L", _fmt_pnl(t.realized_pnl))
+            with c5:
+                st.metric("Cost", f"\u20b9{t.execution_cost:,.0f}")
+            with c6:
+                st.metric("Net P&L", _fmt_pnl(t.net_pnl))
+
+            # Drawdown / favorable if available
+            if t.max_favorable > 0 or t.max_drawdown > 0:
+                d1, d2, d3, d4 = st.columns(4)
+                with d1:
+                    st.metric("Max Favorable", _fmt_pnl(t.max_favorable))
+                with d2:
+                    st.metric("Max Drawdown", f"\u20b9{t.max_drawdown:,.0f}")
+                with d3:
+                    if t.spot_at_entry > 0:
+                        st.metric("Spot at Entry", f"{t.spot_at_entry:,.1f}")
+                with d4:
+                    if t.spot_at_exit > 0:
+                        move = t.spot_at_exit - t.spot_at_entry
+                        st.metric("Spot at Exit", f"{t.spot_at_exit:,.1f}", delta=f"{move:+.1f}")
+
+            # Legs detail
+            leg_rows = []
+            for leg in t.legs_summary:
+                leg_rows.append({
+                    "Action": leg.get("action", ""),
+                    "Instrument": leg.get("instrument", ""),
+                    "Entry": f"\u20b9{leg.get('entry_ltp', 0):.1f}",
+                    "Exit": f"\u20b9{leg.get('exit_ltp', 0):.1f}",
+                    "P&L": _fmt_pnl(leg.get("pnl", 0)),
+                })
+            if leg_rows:
+                st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
+
+            # Entry reasoning
+            if t.entry_context and isinstance(t.entry_context, dict):
+                reasons = t.entry_context.get("strategy_reasoning", [])
+                if reasons:
+                    st.markdown("**Entry reasoning:** " + " / ".join(reasons))
+
+            # Inline critique
+            if critique:
+                st.divider()
+                grade = critique["overall_grade"]
+                color = _GRADE_COLORS.get(grade, "#94a3b8")
+                st.markdown(
+                    f'**Critique:** <span style="background:{color}; color:white; padding:2px 10px; '
+                    f'border-radius:4px; font-weight:700;">{grade.upper()}</span>',
+                    unsafe_allow_html=True,
+                )
+                summary = critique.get("summary", "")
+                if summary:
+                    st.markdown(summary)
+
+                # Signal analysis in columns
+                signals = critique.get("entry_signal_analysis", {})
+                has_signals = any(signals.get(k) for k in ("signals_that_worked", "signals_that_failed", "signals_missed"))
+                if has_signals:
+                    sc1, sc2, sc3 = st.columns(3)
+                    with sc1:
+                        worked = signals.get("signals_that_worked", [])
+                        if worked:
+                            st.markdown("**Worked:**")
+                            for s in worked:
+                                st.markdown(f"- {s}")
+                    with sc2:
+                        failed = signals.get("signals_that_failed", [])
+                        if failed:
+                            st.markdown("**Failed:**")
+                            for s in failed:
+                                st.markdown(f"- {s}")
+                    with sc3:
+                        missed = signals.get("signals_missed", [])
+                        if missed:
+                            st.markdown("**Missed:**")
+                            for s in missed:
+                                st.markdown(f"- {s}")
+
+                # Strategy fitness
+                fitness = critique.get("strategy_fitness", {})
+                if fitness:
+                    right = fitness.get("was_right_strategy", True)
+                    better = fitness.get("better_strategy", "none")
+                    regime = fitness.get("market_regime_match", "")
+                    parts = [f"{'Correct strategy' if right else 'Suboptimal strategy'}"]
+                    if better and better != "none":
+                        parts.append(f"better: {better}")
+                    if regime:
+                        parts.append(f"regime: {regime}")
+                    st.markdown("**Fitness:** " + " | ".join(parts))
+
+                # Parameter recommendations
+                recs = critique.get("parameter_recommendations", [])
+                if recs:
+                    st.markdown("**Recommendations:**")
+                    for rec in recs:
+                        conf = rec.get("confidence", 0)
+                        st.markdown(
+                            f"- `{rec.get('parameter_name')}`: "
+                            f"{rec.get('current_value')} -> {rec.get('recommended_value')} "
+                            f"(conf: {conf:.0%}) — {rec.get('reasoning', '')}"
+                        )
+
+                # Risk management
+                rm = critique.get("risk_management_notes", "")
+                if rm:
+                    st.markdown(f"**Risk notes:** {rm}")
+
+
+# ---------------------------------------------------------------------------
+# Critique processing & display
+# ---------------------------------------------------------------------------
+
+def _clear_critiques_db() -> None:
+    """Wipe all trade critiques and parameter adjustments from the database."""
+    try:
+        from core.database import SentimentDatabase
+        db = SentimentDatabase()
+        db.clear_critiques()
+    except Exception:
+        logger.warning("Failed to clear critiques from DB", exc_info=True)
+
+
+_GRADE_COLORS = {
+    "excellent": "#22c55e",
+    "good": "#4ade80",
+    "acceptable": "#facc15",
+    "poor": "#f87171",
+    "terrible": "#ef4444",
+}
+
+
+def _process_pending_critique(state: PaperTradingState) -> PaperTradingState:
+    """Process one pending critique per refresh cycle. Non-blocking."""
+    crit_cfg = load_config().get("criticizer", {})
+    if not crit_cfg.get("enabled", False) or not crit_cfg.get("auto_critique", True):
+        return state
+    if not state.pending_critiques:
+        return state
+
+    trade_id = state.pending_critiques[0]
+    record = next((t for t in state.trade_log if t.id == trade_id), None)
+    if not record or not record.entry_context:
+        # Skip — no context to critique
+        state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
+        _set_state(state)
+        return state
+
+    try:
+        from analyzers.trade_criticizer import criticize_trade
+        from core.database import SentimentDatabase
+
+        # Get recent performance for this strategy
+        db = SentimentDatabase()
+        recent = db.get_critiques_for_strategy(record.strategy, limit=10)
+
+        critique = criticize_trade(record, recent_performance=recent)
+        db.save_critique(critique, trade_record_dict=record.model_dump(mode="json"))
+        logger.info("Critique saved for trade %s: grade=%s", trade_id, critique.overall_grade)
+    except Exception:
+        logger.warning("Failed to critique trade %s", trade_id, exc_info=True)
+
+    # Pop from queue regardless of success/failure
+    state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
+    _set_state(state)
+    return state
+
+

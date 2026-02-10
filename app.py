@@ -579,4 +579,6 @@ with tab_paper:
     render_paper_trading_tab(
         suggestions=snap.trade_suggestions if snap else None,
         chain=snap.chain if snap else None,
+        technicals=snap.technicals if snap else None,
+        analytics=snap.analytics if snap else None,
     )
