@@ -493,10 +493,10 @@ def evaluate_and_manage(
     ):
         # Track held strategy types to avoid duplicates
         held_strategies = {p.strategy for p in state.open_positions}
-        new_positions: list[PaperPosition] = []
+        opened_any = False
 
         for suggestion in suggestions:
-            if len(state.open_positions) + len(new_positions) >= max_positions:
+            if len(state.open_positions) >= max_positions:
                 break
             if suggestion.score < min_score:
                 continue
@@ -515,14 +515,14 @@ def evaluate_and_manage(
                 position.score, position.lots, position.margin_required,
                 position.net_premium, position.execution_cost,
             )
-            new_positions.append(position)
+            opened_any = True
             held_strategies.add(position.strategy)
             # Update state so capital_remaining reflects newly locked margin
             state = state.model_copy(
                 update={"open_positions": state.open_positions + [position]},
             )
 
-        if new_positions:
+        if opened_any:
             state = state.model_copy(update={"last_open_refresh_ts": refresh_ts})
 
     return state
