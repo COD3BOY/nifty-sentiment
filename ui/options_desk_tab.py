@@ -223,7 +223,7 @@ _BIAS_COLORS = {
 
 _CONFIDENCE_BADGE = {
     "High": "\u2b50 High",
-    "Medium": "\ud83d\udfe1 Medium",
+    "Medium": "\U0001f7e1 Medium",
     "Low": "\u26aa Low",
 }
 
