@@ -10,8 +10,7 @@ plotly>=5.18.0
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 aiohttp>=3.9.0
-# Optional: uncomment if you use these sources
-# kiteconnect>=5.0.0      # GIFT Nifty (needs Kite API credentials)
-# nsepython>=1.0           # FII/DII flows (can have install issues)
-# praw>=7.7.0              # Reddit sentiment
-# youtube-transcript-api>=0.6.0  # YouTube sentiment
+kiteconnect>=5.0.0
+nsepython>=1.0
+# praw>=7.7.0              # Reddit sentiment (optional)
+# youtube-transcript-api>=0.6.0  # YouTube sentiment (optional)
