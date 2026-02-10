@@ -13,7 +13,7 @@ from core.indicators import (
     compute_vwap,
 )
 from core.intraday_fetcher import IntradayCandleFetcher
-from core.nse_fetcher import NseOptionChainFetcher
+from core.nse_fetcher import KiteOptionChainFetcher, NseOptionChainFetcher
 from core.options_analytics import build_analytics
 from core.options_models import (
     OptionChainData,
@@ -38,6 +38,7 @@ class OptionsDeskEngine:
         ticker = cfg.get("nifty_ticker", "^NSEI")
         self._symbol = symbol
         self._nse = NseOptionChainFetcher()
+        self._kite_chain = KiteOptionChainFetcher()
         self._candle = IntradayCandleFetcher(ticker=ticker)
         self._last_df: pd.DataFrame | None = None
         self._cfg = cfg
@@ -49,18 +50,24 @@ class OptionsDeskEngine:
         analytics: OptionsAnalytics | None = None
         technicals: TechnicalIndicators | None = None
 
-        # Fetch option chain
+        # Fetch option chain — try NSE first, fall back to Kite
         try:
             chain = self._nse.fetch(self._symbol)
             if not chain.strikes:
-                logger.warning("Option chain returned empty (no strikes) — NSE may be blocking")
-                errors.append("Option chain unavailable: NSE returned empty data")
-                chain = None
-            else:
+                raise ValueError("NSE returned empty data")
+            analytics = build_analytics(chain)
+        except Exception as nse_exc:
+            logger.warning("NSE option chain failed: %s — trying Kite", nse_exc)
+            try:
+                chain = self._kite_chain.fetch(self._symbol)
+                if not chain.strikes:
+                    raise ValueError("Kite returned empty data")
                 analytics = build_analytics(chain)
-        except Exception as exc:
-            logger.error("Option chain fetch failed: %s", exc)
-            errors.append(f"Option chain unavailable: {exc}")
+                logger.info("Option chain loaded via Kite Connect (%d strikes)", len(chain.strikes))
+            except Exception as kite_exc:
+                logger.error("Kite option chain also failed: %s", kite_exc)
+                errors.append(f"Option chain unavailable: NSE={nse_exc}, Kite={kite_exc}")
+                chain = None
 
         # Fetch candles
         candle_cfg = self._cfg.get("candles", {})
