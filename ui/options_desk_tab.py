@@ -95,8 +95,8 @@ def render_options_desk_tab() -> None:
         st.info("Click **Refresh Data** to fetch the latest options desk snapshot.")
         return
 
-    # Show errors as warnings
-    for err in snap.errors:
+    # Show errors as warnings (deduplicate)
+    for err in dict.fromkeys(snap.errors):
         st.warning(err)
 
     # ================================================================
@@ -122,13 +122,13 @@ def render_options_desk_tab() -> None:
             st.metric("VWAP", "N/A")
 
     with pulse_cols[2]:
-        if anl:
+        if anl and anl.atm_iv > 0:
             st.metric("ATM IV", f"{anl.atm_iv:.1f}%")
         else:
             st.metric("ATM IV", "N/A")
 
     with pulse_cols[3]:
-        if anl:
+        if anl and anl.pcr > 0:
             st.metric("PCR", f"{anl.pcr:.3f}", delta=anl.pcr_label)
         else:
             st.metric("PCR", "N/A")
@@ -164,7 +164,12 @@ def render_options_desk_tab() -> None:
     if snap.trade_suggestions:
         _render_trade_suggestions(snap.trade_suggestions)
     else:
-        st.info("Trade strategies will appear here during market hours when live option chain data is available.")
+        if snap.chain and snap.chain.strikes:
+            st.info("No trade strategies met the minimum score threshold.")
+        elif snap.errors:
+            st.warning("Trade strategies require live option chain data from NSE, which is currently unavailable.")
+        else:
+            st.info("Trade strategies will appear here during market hours when live option chain data is available.")
 
     # ================================================================
     # OPTION CHAIN SNAPSHOT (row 2)
@@ -178,10 +183,10 @@ def render_options_desk_tab() -> None:
         if snap.chain and snap.chain.strikes and anl:
             _render_oi_chart(snap, anl)
         else:
-            st.caption("Option chain data unavailable")
+            st.caption("Option chain data unavailable — NSE may be blocking automated requests")
 
     with col_levels:
-        if anl:
+        if anl and anl.max_pain > 0:
             st.markdown("**Key Levels**")
             st.metric("Max Pain", f"{anl.max_pain:,.0f}")
             st.metric("Support (Max Put OI)", f"{anl.support_strike:,.0f}", delta=f"OI: {anl.support_oi:,.0f}")
@@ -189,7 +194,7 @@ def render_options_desk_tab() -> None:
             if tech:
                 st.metric("Spot vs Max Pain", f"{tech.spot - anl.max_pain:+,.0f} pts")
         else:
-            st.caption("Analytics unavailable")
+            st.caption("Option chain data unavailable — key levels require live OI data from NSE")
 
     # ================================================================
     # TECHNICAL CHART (row 3)

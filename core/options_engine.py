@@ -52,7 +52,12 @@ class OptionsDeskEngine:
         # Fetch option chain
         try:
             chain = self._nse.fetch(self._symbol)
-            analytics = build_analytics(chain)
+            if not chain.strikes:
+                logger.warning("Option chain returned empty (no strikes) — NSE may be blocking")
+                errors.append("Option chain unavailable: NSE returned empty data")
+                chain = None
+            else:
+                analytics = build_analytics(chain)
         except Exception as exc:
             logger.error("Option chain fetch failed: %s", exc)
             errors.append(f"Option chain unavailable: {exc}")
