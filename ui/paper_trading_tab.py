@@ -62,8 +62,9 @@ def render_paper_trading_tab(
     # --- Run engine logic (evaluate_and_manage) ---
     cfg = load_config().get("paper_trading", {})
     lot_size = cfg.get("lot_size", 25)
+    refresh_ts = st.session_state.get("options_last_refresh", 0.0)
 
-    new_state = evaluate_and_manage(state, suggestions, chain, lot_size)
+    new_state = evaluate_and_manage(state, suggestions, chain, lot_size, refresh_ts=refresh_ts)
     _set_state(new_state)
     state = new_state
 
@@ -181,6 +182,7 @@ def _render_open_position(state: PaperTradingState) -> None:
                     "current_position": None,
                     "trade_log": state.trade_log + [record],
                     "total_realized_pnl": state.total_realized_pnl + record.realized_pnl,
+                    "last_open_refresh_ts": st.session_state.get("options_last_refresh", 0.0),
                 },
             )
             _set_state(new_state)

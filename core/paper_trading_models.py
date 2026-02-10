@@ -93,6 +93,7 @@ class PaperTradingState(BaseModel):
     trade_log: list[TradeRecord] = Field(default_factory=list)
     total_realized_pnl: float = 0.0
     is_auto_trading: bool = True
+    last_open_refresh_ts: float = 0.0  # prevents re-open on same refresh cycle
 
     @computed_field  # type: ignore[prop-decorator]
     @property

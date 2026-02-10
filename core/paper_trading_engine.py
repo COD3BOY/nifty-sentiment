@@ -255,12 +255,16 @@ def evaluate_and_manage(
     suggestions: list[TradeSuggestion] | None,
     chain: OptionChainData | None,
     lot_size: int | None = None,
+    refresh_ts: float = 0.0,
 ) -> PaperTradingState:
     """Main paper trading loop. Pure function: state in, state out.
 
     Called every 60s when Options Desk refreshes:
     1. If open position -> update LTPs -> check exits
     2. If no position + auto_trading + suggestions exist -> open best
+
+    refresh_ts gates the "open new position" path — prevents re-opening
+    on the same refresh cycle after a close (manual, SL, or PT).
     """
     if lot_size is None:
         lot_size = _lot_size()
@@ -289,18 +293,20 @@ def evaluate_and_manage(
                     "current_position": None,
                     "trade_log": state.trade_log + [record],
                     "total_realized_pnl": state.total_realized_pnl + record.realized_pnl,
+                    "last_open_refresh_ts": refresh_ts,
                 },
             )
 
         # Position still open, just update LTPs
         return state.model_copy(update={"current_position": position})
 
-    # --- Open new position ---
+    # --- Open new position (only on fresh data) ---
     if (
         state.is_auto_trading
         and state.current_position is None
         and suggestions
         and chain
+        and refresh_ts > state.last_open_refresh_ts
     ):
         # Pick the best suggestion that meets the minimum score
         for suggestion in suggestions:
@@ -311,6 +317,11 @@ def evaluate_and_manage(
                     position.strategy, position.direction_bias,
                     position.score, position.net_premium,
                 )
-                return state.model_copy(update={"current_position": position})
+                return state.model_copy(
+                    update={
+                        "current_position": position,
+                        "last_open_refresh_ts": refresh_ts,
+                    },
+                )
 
     return state
