@@ -96,7 +96,7 @@ TRADE_CRITIQUE_SCHEMA = {
                 "additionalProperties": False,
                 "properties": {
                     "strategy_name": {"type": "string"},
-                    "parameter_name": {"type": "string", "description": "e.g., 'rsi_neutral_upper_bound'"},
+                    "parameter_name": {"type": "string", "description": "Must match a param_key from the scoring rules (e.g., 'iv_low_threshold', 'rsi_neutral_low')"},
                     "current_value": {"type": "number"},
                     "recommended_value": {"type": "number"},
                     "confidence": {"type": "number", "description": "0.0 to 1.0"},
@@ -149,6 +149,7 @@ IMPORTANT GUIDELINES:
 - Reference actual indicator values from the entry/exit contexts in your analysis.
 - Consider the full trade lifecycle: entry conditions, how the trade evolved (max favorable, max drawdown), and exit conditions.
 - Compare entry vs exit market states to understand what changed during the hold period.
+- When recommending parameter changes, use the `param_key` field from the scoring rules as the `parameter_name` in your recommendations. This ensures the system can automatically apply your suggestions. Only recommend changes to parameters that have a `param_key` defined.
 """
 
 

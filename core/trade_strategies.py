@@ -43,6 +43,15 @@ def _min_score() -> float:
 
 
 # ---------------------------------------------------------------------------
+# Parameter override helper
+# ---------------------------------------------------------------------------
+
+def _p(overrides: dict[str, float], name: str, default: float) -> float:
+    """Look up a parameter value from overrides, falling back to *default*."""
+    return overrides.get(name, default)
+
+
+# ---------------------------------------------------------------------------
 # Strike selection helpers
 # ---------------------------------------------------------------------------
 
@@ -129,30 +138,36 @@ def _eval_short_straddle(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     atm = _get_atm_strike_data(chain, analytics.atm_strike)
     if not atm or atm.ce_ltp <= 0 or atm.pe_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
 
-    # Low IV favors short straddle
-    if analytics.atm_iv < 15:
+    iv_low = _p(ov, "iv_low_threshold", 15)
+    iv_mod = _p(ov, "iv_moderate_threshold", 20)
+    if analytics.atm_iv < iv_low:
         score += 25
         reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — low, favorable for selling")
-    elif analytics.atm_iv < 20:
+    elif analytics.atm_iv < iv_mod:
         score += 15
         reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — moderate")
     else:
         score -= 10
 
-    # Neutral RSI
-    if 40 <= tech.rsi <= 60:
+    rsi_n_lo = _p(ov, "rsi_neutral_low", 40)
+    rsi_n_hi = _p(ov, "rsi_neutral_high", 60)
+    rsi_m_lo = _p(ov, "rsi_moderate_low", 30)
+    rsi_m_hi = _p(ov, "rsi_moderate_high", 70)
+    if rsi_n_lo <= tech.rsi <= rsi_n_hi:
         score += 20
         reasons.append(f"RSI {tech.rsi:.1f} in neutral zone — no strong directional bias")
-    elif 30 <= tech.rsi <= 70:
+    elif rsi_m_lo <= tech.rsi <= rsi_m_hi:
         score += 5
     else:
         score -= 15
@@ -160,16 +175,20 @@ def _eval_short_straddle(
     # Spot near max pain
     if analytics.max_pain > 0:
         dist_pct = abs(tech.spot - analytics.max_pain) / analytics.max_pain * 100
-        if dist_pct < 0.3:
+        mp_close = _p(ov, "max_pain_close_pct", 0.3)
+        mp_near = _p(ov, "max_pain_near_pct", 0.8)
+        if dist_pct < mp_close:
             score += 20
-            reasons.append(f"Spot within 0.3% of Max Pain ({analytics.max_pain:.0f})")
-        elif dist_pct < 0.8:
+            reasons.append(f"Spot within {mp_close}% of Max Pain ({analytics.max_pain:.0f})")
+        elif dist_pct < mp_near:
             score += 10
         else:
             score -= 10
 
     # PCR near neutral
-    if 0.8 <= analytics.pcr <= 1.2:
+    pcr_lo = _p(ov, "pcr_neutral_low", 0.8)
+    pcr_hi = _p(ov, "pcr_neutral_high", 1.2)
+    if pcr_lo <= analytics.pcr <= pcr_hi:
         score += 15
         reasons.append(f"PCR {analytics.pcr:.2f} — balanced options flow")
     else:
@@ -177,11 +196,12 @@ def _eval_short_straddle(
 
     # Tight BB = range-bound
     bw = _bb_width_pct(tech)
-    if bw < 1.0:
+    bb_tight = _p(ov, "bb_width_tight_pct", 1.0)
+    if bw < bb_tight:
         score += 10
         reasons.append(f"Bollinger Bands tight ({bw:.1f}%) — range-bound market")
     checks.append("Ensure no major event/news expected")
-    checks.append(f"RSI stays in 40-60 range (currently {tech.rsi:.1f})")
+    checks.append(f"RSI stays in {rsi_n_lo:.0f}-{rsi_n_hi:.0f} range (currently {tech.rsi:.1f})")
     checks.append(f"Spot stays near {analytics.max_pain:.0f} max pain")
 
     if score < 0:
@@ -215,6 +235,7 @@ def _eval_short_strangle(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     offset = _otm_offset()
     otm_ce = _get_strike_by_offset(chain, analytics.atm_strike, offset, "CE")
@@ -222,15 +243,17 @@ def _eval_short_strangle(
     if not otm_ce or not otm_pe or otm_ce.ce_ltp <= 0 or otm_pe.pe_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
 
-    # Low-moderate IV
-    if analytics.atm_iv < 18:
+    iv_low = _p(ov, "iv_low_threshold", 18)
+    iv_mod = _p(ov, "iv_moderate_threshold", 22)
+    if analytics.atm_iv < iv_low:
         score += 20
         reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — favorable for selling")
-    elif analytics.atm_iv < 22:
+    elif analytics.atm_iv < iv_mod:
         score += 10
 
     # Range-bound: strong support + resistance
@@ -238,8 +261,9 @@ def _eval_short_strangle(
         score += 15
         reasons.append(f"Strong support at {analytics.support_strike:.0f} and resistance at {analytics.resistance_strike:.0f}")
 
-    # Neutral RSI
-    if 35 <= tech.rsi <= 65:
+    rsi_lo = _p(ov, "rsi_neutral_low", 35)
+    rsi_hi = _p(ov, "rsi_neutral_high", 65)
+    if rsi_lo <= tech.rsi <= rsi_hi:
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — no extreme momentum")
 
@@ -249,7 +273,8 @@ def _eval_short_strangle(
         reasons.append("Spot within support-resistance band")
 
     bw = _bb_width_pct(tech)
-    if bw < 1.2:
+    bb_tight = _p(ov, "bb_width_tight_pct", 1.2)
+    if bw < bb_tight:
         score += 10
         reasons.append(f"BB width {bw:.1f}% — compressed, range-bound")
 
@@ -288,36 +313,41 @@ def _eval_long_straddle(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     atm = _get_atm_strike_data(chain, analytics.atm_strike)
     if not atm or atm.ce_ltp <= 0 or atm.pe_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
 
-    # High IV skew or BB squeeze → breakout expected
     bw = _bb_width_pct(tech)
-    if bw < 0.8:
+    bb_squeeze = _p(ov, "bb_width_squeeze_pct", 0.8)
+    bb_mod = _p(ov, "bb_width_moderate_pct", 1.0)
+    if bw < bb_squeeze:
         score += 25
         reasons.append(f"Bollinger Band squeeze ({bw:.1f}%) — breakout expected")
-    elif bw < 1.0:
+    elif bw < bb_mod:
         score += 15
 
-    if abs(analytics.iv_skew) > 3:
+    iv_skew_thresh = _p(ov, "iv_skew_threshold", 3)
+    if abs(analytics.iv_skew) > iv_skew_thresh:
         score += 20
         reasons.append(f"IV skew {analytics.iv_skew:+.1f} — significant imbalance, move expected")
 
-    # High IV makes long straddle cheaper in relative terms only if big move expected
-    if analytics.atm_iv > 18:
+    iv_elevated = _p(ov, "iv_elevated_threshold", 18)
+    if analytics.atm_iv > iv_elevated:
         score += 10
         reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — elevated, implies expected movement")
     else:
         score -= 10
 
-    # RSI near extremes or neutral (could break either way from squeeze)
-    if 45 <= tech.rsi <= 55:
+    rsi_coil_lo = _p(ov, "rsi_coiled_low", 45)
+    rsi_coil_hi = _p(ov, "rsi_coiled_high", 55)
+    if rsi_coil_lo <= tech.rsi <= rsi_coil_hi:
         score += 10
         reasons.append(f"RSI {tech.rsi:.1f} — coiled, ready to break")
 
@@ -343,7 +373,7 @@ def _eval_long_straddle(
         direction_bias="Neutral",
         confidence="High" if score >= 50 else "Medium" if score >= 25 else "Low",
         score=score,
-        entry_timing="Enter now — squeeze detected, breakout imminent" if bw < 0.8 else "Enter before major event/news",
+        entry_timing="Enter now — squeeze detected, breakout imminent" if bw < bb_squeeze else "Enter before major event/news",
         technicals_to_check=checks,
         expected_outcome=f"Profitable if NIFTY moves beyond {int(be_down)}-{int(be_up)} range",
         max_profit="Unlimited (both directions)",
@@ -358,6 +388,7 @@ def _eval_long_strangle(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     offset = _otm_offset()
     otm_ce = _get_strike_by_offset(chain, analytics.atm_strike, offset, "CE")
@@ -365,22 +396,27 @@ def _eval_long_strangle(
     if not otm_ce or not otm_pe or otm_ce.ce_ltp <= 0 or otm_pe.pe_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
 
     bw = _bb_width_pct(tech)
-    if bw < 1.0:
+    bb_tight = _p(ov, "bb_width_tight_pct", 1.0)
+    if bw < bb_tight:
         score += 20
         reasons.append(f"BB width {bw:.1f}% — breakout setup")
 
-    if analytics.atm_iv < 16:
+    iv_cheap = _p(ov, "iv_cheap_threshold", 16)
+    iv_mod = _p(ov, "iv_moderate_threshold", 20)
+    if analytics.atm_iv < iv_cheap:
         score += 20
         reasons.append(f"IV {analytics.atm_iv:.1f}% — cheap premiums, good entry for longs")
-    elif analytics.atm_iv < 20:
+    elif analytics.atm_iv < iv_mod:
         score += 10
 
-    if abs(analytics.iv_skew) > 2:
+    iv_skew_thresh = _p(ov, "iv_skew_threshold", 2)
+    if abs(analytics.iv_skew) > iv_skew_thresh:
         score += 10
         reasons.append(f"IV skew {analytics.iv_skew:+.1f} — directional pressure building")
 
@@ -418,6 +454,7 @@ def _eval_bull_put_spread(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     # Sell PE at support, buy PE further OTM
     width = _spread_width()
@@ -428,6 +465,7 @@ def _eval_bull_put_spread(
     if sell_pe.pe_ltp <= buy_pe.pe_ltp:
         return None  # no credit
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
@@ -443,15 +481,16 @@ def _eval_bull_put_spread(
         score += 10
         reasons.append("EMA alignment bullish (9 > 21 > 50)")
 
-    # PCR > 1.2 → put writing = bullish
-    if analytics.pcr > 1.2:
+    pcr_bull = _p(ov, "pcr_bullish_threshold", 1.2)
+    pcr_mod = _p(ov, "pcr_moderate_threshold", 1.0)
+    if analytics.pcr > pcr_bull:
         score += 15
         reasons.append(f"PCR {analytics.pcr:.2f} — heavy put writing (bullish)")
-    elif analytics.pcr > 1.0:
+    elif analytics.pcr > pcr_mod:
         score += 5
 
-    # RSI not overbought
-    if tech.rsi < 70:
+    rsi_ob = _p(ov, "rsi_overbought_threshold", 70)
+    if tech.rsi < rsi_ob:
         score += 5
     else:
         score -= 10
@@ -459,7 +498,7 @@ def _eval_bull_put_spread(
 
     checks.append(f"Supertrend direction stays bullish")
     checks.append(f"Support at {analytics.support_strike:.0f} holds")
-    checks.append(f"RSI stays below 70 (currently {tech.rsi:.1f})")
+    checks.append(f"RSI stays below {rsi_ob:.0f} (currently {tech.rsi:.1f})")
 
     if score < 0:
         return None
@@ -494,6 +533,7 @@ def _eval_bear_call_spread(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     width = _spread_width()
     sell_ce = _get_strike_by_offset(chain, analytics.atm_strike, 1, "CE")
@@ -503,6 +543,7 @@ def _eval_bear_call_spread(
     if sell_ce.ce_ltp <= buy_ce.ce_ltp:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
@@ -517,13 +558,16 @@ def _eval_bear_call_spread(
         score += 10
         reasons.append("EMA alignment bearish (9 < 21 < 50)")
 
-    if analytics.pcr < 0.7:
+    pcr_bear = _p(ov, "pcr_bearish_threshold", 0.7)
+    pcr_mod = _p(ov, "pcr_moderate_threshold", 1.0)
+    if analytics.pcr < pcr_bear:
         score += 15
         reasons.append(f"PCR {analytics.pcr:.2f} — low put writing (bearish)")
-    elif analytics.pcr < 1.0:
+    elif analytics.pcr < pcr_mod:
         score += 5
 
-    if tech.rsi > 30:
+    rsi_os = _p(ov, "rsi_oversold_threshold", 30)
+    if tech.rsi > rsi_os:
         score += 5
     else:
         score -= 10
@@ -531,7 +575,7 @@ def _eval_bear_call_spread(
 
     checks.append("Supertrend direction stays bearish")
     checks.append(f"Resistance at {analytics.resistance_strike:.0f} holds")
-    checks.append(f"RSI stays above 30 (currently {tech.rsi:.1f})")
+    checks.append(f"RSI stays above {rsi_os:.0f} (currently {tech.rsi:.1f})")
 
     if score < 0:
         return None
@@ -566,6 +610,7 @@ def _eval_bull_call_spread(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     width = _spread_width()
     buy_ce = _get_atm_strike_data(chain, analytics.atm_strike)
@@ -575,6 +620,7 @@ def _eval_bull_call_spread(
     if buy_ce.ce_ltp <= sell_ce.ce_ltp:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
@@ -589,15 +635,16 @@ def _eval_bull_call_spread(
         score += 10
         reasons.append(f"Spot above VWAP ({tech.vwap:.0f})")
 
-    # Momentum confirmation
-    if 50 < tech.rsi < 70:
+    rsi_bull_lo = _p(ov, "rsi_bullish_low", 50)
+    rsi_ob = _p(ov, "rsi_overbought_threshold", 70)
+    if rsi_bull_lo < tech.rsi < rsi_ob:
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — bullish momentum, not overbought")
-    elif tech.rsi >= 70:
+    elif tech.rsi >= rsi_ob:
         score -= 10
 
     checks.append("EMA bullish alignment intact")
-    checks.append(f"RSI below 70 (currently {tech.rsi:.1f})")
+    checks.append(f"RSI below {rsi_ob:.0f} (currently {tech.rsi:.1f})")
     checks.append("Supertrend stays bullish")
 
     if score < 0:
@@ -633,6 +680,7 @@ def _eval_bear_put_spread(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     width = _spread_width()
     buy_pe = _get_atm_strike_data(chain, analytics.atm_strike)
@@ -642,6 +690,7 @@ def _eval_bear_put_spread(
     if buy_pe.pe_ltp <= sell_pe.pe_ltp:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
@@ -656,14 +705,17 @@ def _eval_bear_put_spread(
         score += 10
         reasons.append(f"Spot below VWAP ({tech.vwap:.0f})")
 
-    if 30 < tech.rsi < 50:
+    rsi_bear_lo = _p(ov, "rsi_bearish_low", 30)
+    rsi_bear_hi = _p(ov, "rsi_bearish_high", 50)
+    rsi_os = _p(ov, "rsi_oversold_threshold", 30)
+    if rsi_bear_lo < tech.rsi < rsi_bear_hi:
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — bearish momentum, not oversold")
-    elif tech.rsi <= 30:
+    elif tech.rsi <= rsi_os:
         score -= 10
 
     checks.append("EMA bearish alignment intact")
-    checks.append(f"RSI above 30 (currently {tech.rsi:.1f})")
+    checks.append(f"RSI above {rsi_os:.0f} (currently {tech.rsi:.1f})")
     checks.append("Supertrend stays bearish")
 
     if score < 0:
@@ -699,6 +751,7 @@ def _eval_iron_condor(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     offset = _otm_offset()
     width = _spread_width()
@@ -711,27 +764,35 @@ def _eval_iron_condor(
     if sell_ce.ce_ltp <= 0 or buy_ce.ce_ltp <= 0 or sell_pe.pe_ltp <= 0 or buy_pe.pe_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
 
-    # Very neutral conditions
-    if 40 <= tech.rsi <= 60:
+    rsi_n_lo = _p(ov, "rsi_neutral_low", 40)
+    rsi_n_hi = _p(ov, "rsi_neutral_high", 60)
+    rsi_m_lo = _p(ov, "rsi_moderate_low", 35)
+    rsi_m_hi = _p(ov, "rsi_moderate_high", 65)
+    if rsi_n_lo <= tech.rsi <= rsi_n_hi:
         score += 20
         reasons.append(f"RSI {tech.rsi:.1f} — perfectly neutral")
-    elif 35 <= tech.rsi <= 65:
+    elif rsi_m_lo <= tech.rsi <= rsi_m_hi:
         score += 10
 
     bw = _bb_width_pct(tech)
-    if bw < 1.0:
+    bb_tight = _p(ov, "bb_width_tight_pct", 1.0)
+    if bw < bb_tight:
         score += 15
         reasons.append(f"BB width {bw:.1f}% — tight range")
 
-    if analytics.atm_iv < 18:
+    iv_mod = _p(ov, "iv_moderate_threshold", 18)
+    if analytics.atm_iv < iv_mod:
         score += 15
         reasons.append(f"IV {analytics.atm_iv:.1f}% — moderate, good for selling")
 
-    if 0.85 <= analytics.pcr <= 1.15:
+    pcr_bal_lo = _p(ov, "pcr_balanced_low", 0.85)
+    pcr_bal_hi = _p(ov, "pcr_balanced_high", 1.15)
+    if pcr_bal_lo <= analytics.pcr <= pcr_bal_hi:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — balanced")
 
@@ -785,11 +846,13 @@ def _eval_long_ce(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     atm = _get_atm_strike_data(chain, analytics.atm_strike)
     if not atm or atm.ce_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
@@ -808,13 +871,15 @@ def _eval_long_ce(
             score += 5
             reasons.append(f"Spot above VWAP ({tech.vwap:.0f})")
 
-    if tech.rsi < 70:
+    rsi_ob = _p(ov, "rsi_overbought_threshold", 70)
+    if tech.rsi < rsi_ob:
         score += 10
         reasons.append(f"RSI {tech.rsi:.1f} — room to run higher")
     else:
         score -= 15
 
-    if analytics.pcr > 1.2:
+    pcr_bull = _p(ov, "pcr_bullish_threshold", 1.2)
+    if analytics.pcr > pcr_bull:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — bullish options flow")
 
@@ -851,11 +916,13 @@ def _eval_long_pe(
     analytics: OptionsAnalytics,
     tech: TechnicalIndicators,
     chain: OptionChainData,
+    overrides: dict[str, float] | None = None,
 ) -> TradeSuggestion | None:
     atm = _get_atm_strike_data(chain, analytics.atm_strike)
     if not atm or atm.pe_ltp <= 0:
         return None
 
+    ov = overrides or {}
     score = 0.0
     reasons: list[str] = []
     checks: list[str] = []
@@ -874,13 +941,15 @@ def _eval_long_pe(
             score += 5
             reasons.append(f"Spot below VWAP ({tech.vwap:.0f})")
 
-    if tech.rsi > 30:
+    rsi_os = _p(ov, "rsi_oversold_threshold", 30)
+    if tech.rsi > rsi_os:
         score += 10
         reasons.append(f"RSI {tech.rsi:.1f} — room to fall further")
     else:
         score -= 15
 
-    if analytics.pcr < 0.7:
+    pcr_bear = _p(ov, "pcr_bearish_threshold", 0.7)
+    if analytics.pcr < pcr_bear:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — bearish options flow")
 
@@ -914,6 +983,24 @@ def _eval_long_pe(
 
 
 # ---------------------------------------------------------------------------
+# Evaluator → strategy name mapping (for override lookup)
+# ---------------------------------------------------------------------------
+
+_EVALUATOR_STRATEGY_MAP = {
+    _eval_short_straddle: "Short Straddle",
+    _eval_short_strangle: "Short Strangle",
+    _eval_long_straddle: "Long Straddle",
+    _eval_long_strangle: "Long Strangle",
+    _eval_bull_put_spread: "Bull Put Spread",
+    _eval_bear_call_spread: "Bear Call Spread",
+    _eval_bull_call_spread: "Bull Call Spread",
+    _eval_bear_put_spread: "Bear Put Spread",
+    _eval_iron_condor: "Iron Condor",
+    _eval_long_ce: "Long Call (CE)",
+    _eval_long_pe: "Long Put (PE)",
+}
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -941,9 +1028,22 @@ def generate_trade_suggestions(
     min_score = _min_score()
     suggestions: list[TradeSuggestion] = []
 
+    # Load runtime parameter overrides from DB (empty dict on first run)
+    from core.database import SentimentDatabase
+    try:
+        db = SentimentDatabase()
+        all_overrides = db.get_active_overrides()
+    except Exception:
+        logger.debug("Could not load parameter overrides, using defaults", exc_info=True)
+        all_overrides = {}
+
     for evaluator in _ALL_EVALUATORS:
         try:
-            result = evaluator(analytics, technicals, chain)
+            strategy_name = _EVALUATOR_STRATEGY_MAP[evaluator]
+            result = evaluator(
+                analytics, technicals, chain,
+                overrides=all_overrides.get(strategy_name, {}),
+            )
             if result is not None and result.score >= min_score:
                 suggestions.append(result)
         except Exception:

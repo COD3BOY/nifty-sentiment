@@ -30,7 +30,7 @@ class _SafeEncoder(json.JSONEncoder):
 def _dumps(obj: Any) -> str:
     return json.dumps(obj, cls=_SafeEncoder)
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine, func
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from core.config import load_config
@@ -224,11 +224,20 @@ class SentimentDatabase:
     # ------------------------------------------------------------------
 
     def save_critique(self, critique, trade_record_dict: dict | None = None) -> None:
-        """Save a TradeCritique and its parameter recommendations."""
+        """Save a TradeCritique and its parameter recommendations.
+
+        Qualifying recommendations (confidence >= threshold, drift <= max) are
+        auto-applied so the strategy evaluators pick them up on the next cycle.
+        """
         from core.criticizer_models import TradeCritique
 
         if not isinstance(critique, TradeCritique):
             raise TypeError("Expected TradeCritique instance")
+
+        config = load_config()
+        tuning_cfg = config.get("options_desk", {}).get("trade_critique", {})
+        min_confidence = tuning_cfg.get("override_min_confidence", 0.7)
+        max_drift = tuning_cfg.get("max_parameter_drift_pct", 0.30)
 
         with self.SessionLocal() as session:
             row = TradeCritiqueRow(
@@ -249,7 +258,7 @@ class SentimentDatabase:
             )
             session.merge(row)
 
-            # Denormalized parameter adjustments
+            # Denormalized parameter adjustments — auto-apply qualifying ones
             for rec in critique.parameter_recommendations:
                 adj = ParameterAdjustmentRow(
                     trade_id=critique.trade_id,
@@ -262,6 +271,13 @@ class SentimentDatabase:
                     condition=rec.condition,
                     applied=0,
                 )
+                if rec.confidence >= min_confidence:
+                    if rec.current_value == 0 or (
+                        abs(rec.recommended_value - rec.current_value)
+                        / abs(rec.current_value)
+                        <= max_drift
+                    ):
+                        adj.applied = 1
                 session.add(adj)
 
             session.commit()
@@ -342,6 +358,38 @@ class SentimentDatabase:
                 }
                 for r in rows
             ]
+
+    def get_active_overrides(self) -> dict[str, dict[str, float]]:
+        """Return the latest applied override per (strategy, parameter).
+
+        Returns ``{strategy_name: {parameter_name: recommended_value}}``.
+        Only rows with ``applied=1`` are considered; for each
+        (strategy, param) pair the row with the highest ``id`` wins.
+        """
+        with self.SessionLocal() as session:
+            # Subquery: max id per (strategy, param) among applied rows
+            sub = (
+                session.query(
+                    ParameterAdjustmentRow.strategy_name,
+                    ParameterAdjustmentRow.parameter_name,
+                    func.max(ParameterAdjustmentRow.id).label("max_id"),
+                )
+                .filter(ParameterAdjustmentRow.applied == 1)
+                .group_by(
+                    ParameterAdjustmentRow.strategy_name,
+                    ParameterAdjustmentRow.parameter_name,
+                )
+                .subquery()
+            )
+            rows = (
+                session.query(ParameterAdjustmentRow)
+                .join(sub, ParameterAdjustmentRow.id == sub.c.max_id)
+                .all()
+            )
+            result: dict[str, dict[str, float]] = {}
+            for r in rows:
+                result.setdefault(r.strategy_name, {})[r.parameter_name] = r.recommended_value
+            return result
 
     def clear_critiques(self) -> None:
         """Delete all trade critiques and parameter adjustments."""
