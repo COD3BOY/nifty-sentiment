@@ -50,23 +50,24 @@ class OptionsDeskEngine:
         analytics: OptionsAnalytics | None = None
         technicals: TechnicalIndicators | None = None
 
-        # Fetch option chain — try NSE first, fall back to Kite
+        # Fetch option chain — try Kite first, fall back to NSE
         try:
-            chain = self._nse.fetch(self._symbol)
+            chain = self._kite_chain.fetch(self._symbol)
             if not chain.strikes:
-                raise ValueError("NSE returned empty data")
+                raise ValueError("Kite returned empty data")
             analytics = build_analytics(chain)
-        except Exception as nse_exc:
-            logger.warning("NSE option chain failed: %s — trying Kite", nse_exc)
+            logger.info("Option chain loaded via Kite Connect (%d strikes)", len(chain.strikes))
+        except Exception as kite_exc:
+            logger.warning("Kite option chain failed: %s — trying NSE", kite_exc)
             try:
-                chain = self._kite_chain.fetch(self._symbol)
+                chain = self._nse.fetch(self._symbol)
                 if not chain.strikes:
-                    raise ValueError("Kite returned empty data")
+                    raise ValueError("NSE returned empty data")
                 analytics = build_analytics(chain)
-                logger.info("Option chain loaded via Kite Connect (%d strikes)", len(chain.strikes))
-            except Exception as kite_exc:
-                logger.error("Kite option chain also failed: %s", kite_exc)
-                errors.append(f"Option chain unavailable: NSE={nse_exc}, Kite={kite_exc}")
+                logger.info("Option chain loaded via NSE (%d strikes)", len(chain.strikes))
+            except Exception as nse_exc:
+                logger.error("NSE option chain also failed: %s", nse_exc)
+                errors.append(f"Option chain unavailable: Kite={kite_exc}, NSE={nse_exc}")
                 chain = None
 
         # Fetch candles
@@ -84,8 +85,8 @@ class OptionsDeskEngine:
 
         # Data quality warnings
         if analytics and analytics.atm_iv == 0.0:
-            errors.append("IV data unavailable (Kite fallback) — IV-dependent scores unreliable")
-            logger.warning("IV data unavailable (atm_iv=0.0) — Kite fallback likely, IV scores unreliable")
+            errors.append("IV data unavailable — IV-dependent scores unreliable")
+            logger.warning("IV data unavailable (atm_iv=0.0) — IV scores unreliable")
         if analytics and technicals:
             logger.info(
                 "Data quality: spot=%.0f, rsi=%.1f, atm_iv=%.1f, bb_width=%.2f%%",

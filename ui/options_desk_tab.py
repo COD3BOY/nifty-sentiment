@@ -465,27 +465,31 @@ def _render_expandable_details(snap) -> None:
 
     # Change-in-OI buildup analysis
     if chain and chain.strikes:
+        has_chg_oi = any(s.ce_change_in_oi != 0 or s.pe_change_in_oi != 0 for s in chain.strikes)
         with st.expander("Change in OI Analysis"):
-            sorted_strikes = sorted(chain.strikes, key=lambda s: s.strike_price)
-            atm = anl.atm_strike if anl else 0
+            if not has_chg_oi:
+                st.info("Change-in-OI data not available from Kite. This section requires NSE as data source.")
+            else:
+                sorted_strikes = sorted(chain.strikes, key=lambda s: s.strike_price)
+                atm = anl.atm_strike if anl else 0
 
-            st.markdown("**Call OI Buildup (top 5 by Change in OI):**")
-            ce_buildup = sorted(sorted_strikes, key=lambda s: s.ce_change_in_oi, reverse=True)[:5]
-            for s in ce_buildup:
-                tag = " (ATM)" if s.strike_price == atm else ""
-                if s.ce_change_in_oi > 0:
-                    st.markdown(f"- Strike {s.strike_price:.0f}{tag}: +{s.ce_change_in_oi:,.0f} (Short buildup / Resistance)")
-                elif s.ce_change_in_oi < 0:
-                    st.markdown(f"- Strike {s.strike_price:.0f}{tag}: {s.ce_change_in_oi:,.0f} (Short covering / Bullish)")
+                st.markdown("**Call OI Buildup (top 5 by Change in OI):**")
+                ce_buildup = sorted(sorted_strikes, key=lambda s: s.ce_change_in_oi, reverse=True)[:5]
+                for s in ce_buildup:
+                    tag = " (ATM)" if s.strike_price == atm else ""
+                    if s.ce_change_in_oi > 0:
+                        st.markdown(f"- Strike {s.strike_price:.0f}{tag}: +{s.ce_change_in_oi:,.0f} (Short buildup / Resistance)")
+                    elif s.ce_change_in_oi < 0:
+                        st.markdown(f"- Strike {s.strike_price:.0f}{tag}: {s.ce_change_in_oi:,.0f} (Short covering / Bullish)")
 
-            st.markdown("**Put OI Buildup (top 5 by Change in OI):**")
-            pe_buildup = sorted(sorted_strikes, key=lambda s: s.pe_change_in_oi, reverse=True)[:5]
-            for s in pe_buildup:
-                tag = " (ATM)" if s.strike_price == atm else ""
-                if s.pe_change_in_oi > 0:
-                    st.markdown(f"- Strike {s.strike_price:.0f}{tag}: +{s.pe_change_in_oi:,.0f} (Put writing / Support)")
-                elif s.pe_change_in_oi < 0:
-                    st.markdown(f"- Strike {s.strike_price:.0f}{tag}: {s.pe_change_in_oi:,.0f} (Long unwinding / Bearish)")
+                st.markdown("**Put OI Buildup (top 5 by Change in OI):**")
+                pe_buildup = sorted(sorted_strikes, key=lambda s: s.pe_change_in_oi, reverse=True)[:5]
+                for s in pe_buildup:
+                    tag = " (ATM)" if s.strike_price == atm else ""
+                    if s.pe_change_in_oi > 0:
+                        st.markdown(f"- Strike {s.strike_price:.0f}{tag}: +{s.pe_change_in_oi:,.0f} (Put writing / Support)")
+                    elif s.pe_change_in_oi < 0:
+                        st.markdown(f"- Strike {s.strike_price:.0f}{tag}: {s.pe_change_in_oi:,.0f} (Long unwinding / Bearish)")
 
     # Signal reasoning summary
     if snap.signals:

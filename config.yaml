@@ -118,6 +118,9 @@ options_desk:
     supertrend_multiplier: 3.0
     bb_period: 20
     bb_std: 2.0
+  iv_calculator:
+    risk_free_rate: 0.065    # RBI repo rate (annual, decimal)
+    atm_range: 15            # Compute IV for ± this many strikes around ATM
   signal_thresholds:
     rsi_overbought: 70
     rsi_oversold: 30

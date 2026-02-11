@@ -7,7 +7,8 @@ from datetime import datetime
 
 import requests
 
-from core.config import get_env
+from core.config import get_env, load_config
+from core.iv_calculator import compute_iv_for_chain
 from core.options_models import OptionChainData, StrikeData
 
 logger = logging.getLogger(__name__)
@@ -248,14 +249,14 @@ class KiteOptionChainFetcher:
                     ce_oi=ce_oi,
                     ce_change_in_oi=0.0,  # Kite doesn't provide change in OI
                     ce_volume=int(ce.get("volume", 0)),
-                    ce_iv=0.0,  # Kite doesn't provide IV
+                    ce_iv=0.0,  # IV computed post-loop via Black-Scholes
                     ce_ltp=float(ce.get("last_price", 0)),
                     ce_bid=float(ce_buy[0].get("price", 0)) if ce_buy else 0.0,
                     ce_ask=float(ce_sell[0].get("price", 0)) if ce_sell else 0.0,
                     pe_oi=pe_oi,
                     pe_change_in_oi=0.0,
                     pe_volume=int(pe.get("volume", 0)),
-                    pe_iv=0.0,
+                    pe_iv=0.0,  # IV computed post-loop via Black-Scholes
                     pe_ltp=float(pe.get("last_price", 0)),
                     pe_bid=float(pe_buy[0].get("price", 0)) if pe_buy else 0.0,
                     pe_ask=float(pe_sell[0].get("price", 0)) if pe_sell else 0.0,
@@ -263,6 +264,18 @@ class KiteOptionChainFetcher:
             )
             total_ce_oi += ce_oi
             total_pe_oi += pe_oi
+
+        # Compute implied volatility from Black-Scholes (Kite doesn't provide IV)
+        if underlying > 0 and strikes:
+            try:
+                iv_cfg = load_config().get("options_desk", {}).get("iv_calculator", {})
+                strikes = compute_iv_for_chain(
+                    strikes, underlying, nearest_expiry,
+                    risk_free_rate=iv_cfg.get("risk_free_rate", 0.065),
+                    atm_range=iv_cfg.get("atm_range", 15),
+                )
+            except Exception as exc:
+                logger.warning("IV computation failed, proceeding without IV: %s", exc)
 
         expiry_str = nearest_expiry.strftime("%d-%b-%Y") if hasattr(nearest_expiry, "strftime") else str(nearest_expiry)
 
