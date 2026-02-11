@@ -640,9 +640,6 @@ def evaluate_and_manage(
     Called every 60s when Options Desk refreshes:
     Phase 1: Manage existing positions — update LTPs, check SL/PT exits
     Phase 2: Open new positions — fill remaining slots from suggestions
-
-    refresh_ts gates the "open new position" path — prevents re-opening
-    on the same refresh cycle after a close (manual, SL, or PT).
     """
     if lot_size is None:
         lot_size = _lot_size()
@@ -700,8 +697,7 @@ def evaluate_and_manage(
             "trade_log": state.trade_log + new_records,
             "total_realized_pnl": state.total_realized_pnl + added_realized,
             "total_execution_costs": state.total_execution_costs + added_costs,
-            # If any positions were closed, gate re-open to next cycle
-            "last_open_refresh_ts": refresh_ts if new_records else state.last_open_refresh_ts,
+            "last_open_refresh_ts": state.last_open_refresh_ts,
             "pending_critiques": state.pending_critiques + new_pending_critiques,
         },
     )
@@ -738,13 +734,7 @@ def evaluate_and_manage(
         and suggestions
         and chain
     ):
-        # (a) Skip on fresh data refresh — let data settle one cycle
-        if refresh_ts != 0.0 and refresh_ts != state.last_open_refresh_ts:
-            logger.info("Skipping trade opening — letting fresh data settle (refresh_ts=%.1f)", refresh_ts)
-            state = state.model_copy(update={"last_open_refresh_ts": refresh_ts})
-            return state
-
-        # (b) 60-second cooldown between successive trade opens
+        # 60-second cooldown between successive trade opens
         cooldown = cfg.get("trade_cooldown_seconds", 60)
         now_ts = _time.time()
         if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < cooldown:
