@@ -186,6 +186,67 @@ algorithms:
   sentinel:
     enabled: true
     display_name: "V1 Sentinel"
+  hedge:
+    enabled: true
+    display_name: "V3 Hedge"
+    # Capital
+    initial_capital: 2500000
+    lot_size: 75
+    # Section 1 — Risk limits
+    max_risk_per_trade_pct: 0.5
+    max_portfolio_risk_pct: 3.0
+    max_margin_utilization_pct: 25.0
+    daily_loss_shutdown_pct: 1.25
+    weekly_drawdown_shutdown_pct: 2.0
+    consecutive_loss_reduce_threshold: 3
+    consecutive_loss_halt: 5
+    # Section 2 — Allocation
+    primary_allocation_pct: 80.0
+    secondary_allocation_pct: 20.0
+    max_iron_condors: 3
+    max_directional_positions: 1
+    # Section 3A — Credit regime
+    credit_min_iv_percentile: 55.0
+    credit_max_bb_width_pct: 3.0
+    vix_ticker: "^INDIAVIX"
+    vix_credit_min: 14.0
+    vix_credit_max: 24.0
+    vix_no_credit_below: 14.0
+    vix_half_size_above: 28.0
+    macro_event_override: false
+    # Section 3B — Iron condor
+    ic_widths: [50, 100]
+    ic_min_credit_pct_width: 35.0
+    ic_max_risk_reward: 2.0
+    ic_short_delta_min: 0.12
+    ic_short_delta_max: 0.18
+    ic_breakeven_expected_move_mult: 1.3
+    # Section 3C — Credit stop loss
+    credit_sl_multiplier: 1.8
+    delta_adjustment_threshold: 0.25
+    delta_exit_threshold: 0.30
+    # Section 4 — Hedged strangle
+    strangle_min_iv_percentile: 65.0
+    strangle_vix_min: 16.0
+    strangle_vix_max: 22.0
+    strangle_delta_min: 0.10
+    strangle_delta_max: 0.15
+    strangle_min_credit_pct_spot: 2.0
+    strangle_wing_offset: 200
+    # Section 5 — Debit spread
+    debit_max_iv_percentile: 40.0
+    debit_min_risk_reward: 2.0
+    debit_max_risk_pct: 0.4
+    debit_max_sessions: 3
+    debit_sl_premium_loss_pct: 50.0
+    # Section 7 — Liquidity
+    min_oi: 15000
+    min_volume: 2000
+    max_bid_ask_pct: 3.0
+    slippage_per_leg: 0.05
+    post_fill_max_rr: 2.0
+    # Section 8 — Portfolio
+    max_open_positions: 4
   institutional:
     enabled: true
     display_name: "V2 Institutional"
@@ -225,6 +286,75 @@ algorithms:
     consecutive_loss_halt: 3
     # Execution
     slippage_per_leg: 0.05                   # ₹0.05 per leg (1 tick)
+  vol_optimized:
+    enabled: true
+    display_name: "V4 Vol-Optimized"
+    # Capital
+    initial_capital: 2500000
+    lot_size: 75
+    # Regime thresholds (tuned via scripts/tune_vol_params.py)
+    regime_sell_vrp_min: 0.45
+    regime_sell_vov_max: 0.75
+    standdown_vov_min: 0.75
+    standdown_rv_min: 0.90
+    # Dynamic function coefficients — strike delta
+    strike_delta_base: 0.20
+    strike_delta_coeff: 0.08
+    # Dynamic function coefficients — min credit ratio
+    credit_ratio_base: 0.24
+    credit_ratio_coeff: 0.18
+    # Dynamic function coefficients — SL multiple
+    sl_multiple_base: 1.4
+    sl_multiple_coeff: 0.6
+    # Dynamic function coefficients — delta exit
+    delta_exit_base: 0.22
+    delta_exit_coeff: 0.10
+    # Dynamic function coefficients — take profit
+    take_profit_base: 0.45
+    take_profit_coeff: 0.20
+    # Dynamic function coefficients — breakeven coverage
+    breakeven_mult_base: 1.20
+    breakeven_mult_coeff: 0.35
+    # Dynamic function coefficients — risk per trade
+    risk_per_trade_base_pct: 0.50
+    risk_per_trade_rv_coeff: 0.5
+    risk_per_trade_vov_coeff: 0.5
+    # Dynamic function coefficients — max portfolio risk
+    max_portfolio_risk_base_pct: 3.0
+    max_portfolio_risk_coeff: 0.5
+    # Hard gates (same as V3)
+    max_margin_utilization_pct: 25.0
+    daily_loss_shutdown_pct: 1.25
+    weekly_drawdown_shutdown_pct: 2.0
+    consecutive_loss_reduce_threshold: 3
+    consecutive_loss_halt: 5
+    # Portfolio structure
+    max_open_positions: 4
+    max_iron_condors: 3
+    max_directional_positions: 1
+    primary_allocation_pct: 80.0
+    secondary_allocation_pct: 20.0
+    # Trade construction — IC
+    ic_widths: [50, 100]
+    ic_max_risk_reward: 2.0
+    # Trade construction — Hedged strangle
+    strangle_wing_offset: 200
+    strangle_min_credit_pct_spot: 2.0
+    # Trade construction — Debit spread
+    debit_min_risk_reward: 2.0
+    debit_max_risk_pct: 0.4
+    debit_max_sessions: 3
+    debit_sl_premium_loss_pct: 50.0
+    # Liquidity
+    min_oi: 15000
+    min_volume: 2000
+    max_bid_ask_pct: 3.0
+    slippage_per_leg: 0.05
+    post_fill_max_rr: 2.0
+    # VIX
+    vix_ticker: "^INDIAVIX"
+    # Macro events
+    macro_event_override: false
 
 criticizer:
   enabled: true

@@ -20,4 +20,6 @@ def discover_algorithms() -> None:
     from algorithms import (  # noqa: F401
         sentinel,
         institutional,
+        hedge,
+        vol_optimized,
     )
