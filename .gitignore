@@ -4,10 +4,14 @@
 !.env.example
 .streamlit/secrets.toml
 
-# Data
-data/*.db
-data/*.sqlite
-data/*.json
+# Data (runtime)
+data/
+
+# Working docs (kept locally, not committed)
+docs/algorithms/
+docs/architecture.md
+docs/data-sources.md
+docs/options-math.md
 
 # Python
 __pycache__/

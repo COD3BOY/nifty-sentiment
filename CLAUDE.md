@@ -130,6 +130,12 @@ Common functions extracted from algorithms to avoid duplication:
 
 **Every core change MUST be logged in the Change Log below with a reason.** Do not change thresholds, lot sizes, risk parameters, formulas, or algorithm logic without documenting why the change was made and what data supports it. This prevents back-and-forth changes without supporting rationale.
 
+## Git Workflow
+
+- **Commit after each meaningful unit of work** — don't batch everything into one giant commit. Each feature, fix, or logical group of changes should be its own commit.
+- **Do NOT push until explicitly asked** — keep commits local. Only push to remote when the user says to push.
+- **Working docs stay local** — `docs/algorithms/`, `docs/architecture.md`, `docs/data-sources.md`, `docs/options-math.md` are gitignored. Only `docs/production-readiness.md` is tracked.
+
 ## Config Reference
 
 All config lives in `config.yaml`:
