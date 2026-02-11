@@ -1,7 +1,7 @@
 """Streamlit UI for the Intraday Options Desk tab."""
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -15,10 +15,9 @@ from core.indicators import (
     compute_supertrend,
     compute_vwap,
 )
+from core.market_hours import IST, is_market_open
 from core.options_engine import OptionsDeskEngine
 from core.options_models import SignalDirection
-
-IST = timezone(timedelta(hours=5, minutes=30))
 
 _SIGNAL_COLORS = {
     SignalDirection.BULLISH: ("#1b5e20", "#e8f5e9"),
@@ -40,12 +39,7 @@ def _get_engine() -> OptionsDeskEngine:
 
 
 def _is_market_hours() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:  # Saturday=5, Sunday=6
-        return False
-    start = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    end = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return start <= now <= end
+    return is_market_open()
 
 
 def _last_refresh_text(ts: float) -> str:

@@ -22,6 +22,7 @@ from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
 from core.event_calendar import is_near_event
 from core.greeks import bs_delta, compute_pop
+from core.market_hours import is_market_open
 from core.options_analytics import compute_liquidity_score
 from core.options_models import (
     OptionChainData,
@@ -1214,6 +1215,10 @@ class AtlasAlgorithm(TradingAlgorithm):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
     ) -> PaperTradingState:
+        # Market-open guard: skip all trading logic when market is closed
+        if not is_market_open():
+            return state
+
         if lot_size is None:
             lot_size = self.config.get("lot_size", 75)
         cfg = self.config

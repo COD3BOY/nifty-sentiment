@@ -14,6 +14,7 @@ from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
+from core.market_hours import is_market_open
 from core.paper_trading_models import _now_ist
 
 from core.config import load_config
@@ -641,6 +642,10 @@ def evaluate_and_manage(
     Phase 1: Manage existing positions — update LTPs, check SL/PT exits
     Phase 2: Open new positions — fill remaining slots from suggestions
     """
+    # Market-open guard: skip all trading logic when market is closed
+    if not is_market_open():
+        return state
+
     if lot_size is None:
         lot_size = _lot_size()
 
