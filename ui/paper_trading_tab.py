@@ -42,6 +42,15 @@ def _state_key(algo_name: str) -> str:
     return f"paper_trading_state_{algo_name}"
 
 
+def _initial_capital(algo_name: str) -> float:
+    """Resolve initial capital: per-algorithm override > global paper_trading default."""
+    full_cfg = load_config()
+    algo_cap = full_cfg.get("algorithms", {}).get(algo_name, {}).get("initial_capital")
+    if algo_cap is not None:
+        return float(algo_cap)
+    return float(full_cfg.get("paper_trading", {}).get("initial_capital", 100_000))
+
+
 def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
     """Get or initialize paper trading state from session_state."""
     key = _state_key(algo_name)
@@ -52,7 +61,7 @@ def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
         else:
             cfg = load_config().get("paper_trading", {})
             st.session_state[key] = PaperTradingState(
-                initial_capital=cfg.get("initial_capital", 100_000),
+                initial_capital=_initial_capital(algo_name),
                 is_auto_trading=cfg.get("auto_execute", True),
             )
     return st.session_state[key]
@@ -139,7 +148,7 @@ def render_paper_trading_tab(
         if st.button("Reset Session", key=f"paper_reset_btn_{algo_name}", type="secondary"):
             cfg = load_config().get("paper_trading", {})
             fresh = PaperTradingState(
-                initial_capital=cfg.get("initial_capital", 100_000),
+                initial_capital=_initial_capital(algo_name),
                 is_auto_trading=cfg.get("auto_execute", True),
             )
             _set_state(fresh, algo_name)

@@ -190,7 +190,7 @@ algorithms:
     enabled: true
     display_name: "V3 Optimus"
     # Capital
-    initial_capital: 2500000
+    initial_capital: 5000000
     lot_size: 75
     # Section 1 — Risk limits
     max_risk_per_trade_pct: 0.5
@@ -250,6 +250,8 @@ algorithms:
   jarvis:
     enabled: true
     display_name: "V2 Jarvis"
+    # Capital
+    initial_capital: 5000000
     # Risk limits
     max_capital_risk_per_trade_pct: 1.0      # 1% of account per trade
     max_margin_utilization_pct: 30.0
@@ -290,7 +292,7 @@ algorithms:
     enabled: true
     display_name: "V4 Atlas"
     # Capital
-    initial_capital: 2500000
+    initial_capital: 5000000
     lot_size: 75
     # Regime thresholds (tuned via scripts/tune_vol_params.py)
     regime_sell_vrp_min: 0.45
