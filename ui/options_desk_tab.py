@@ -58,10 +58,16 @@ def _render_market_status_banner() -> None:
         else:
             context = "Post-market"
 
-        if last_ts > 0:
-            st.info(f"Market Closed ({context})  |  Showing last available data  |  Data from: {_last_refresh_text(last_ts)}")
+        # Show time elapsed since market close (3:30 PM IST)
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        if now >= market_close:
+            elapsed = int((now - market_close).total_seconds())
+            h, rem = divmod(elapsed, 3600)
+            m, _ = divmod(rem, 60)
+            since_close = f"{h}h {m}m ago" if h else f"{m}m ago"
+            st.info(f"Market Closed ({context})  |  Showing last available data  |  Closed: {since_close}")
         else:
-            st.info(f"Market Closed ({context})  |  Loading last available data...")
+            st.info(f"Market Closed ({context})  |  Showing last available data")
 
 
 def render_options_desk_tab() -> None:
