@@ -1,6 +1,6 @@
 """Token bucket rate limiter and exponential backoff retry decorator.
 
-Provides async-friendly rate limiting for external API calls (yfinance, Kite, Claude)
+Provides rate limiting for external API calls (yfinance, Kite, Claude)
 and a retry decorator with exponential backoff + jitter for transient failures.
 """
 
@@ -8,16 +8,17 @@ import asyncio
 import functools
 import logging
 import random
+import threading
 import time
 
 logger = logging.getLogger(__name__)
 
 
 class TokenBucketRateLimiter:
-    """Async token bucket rate limiter.
+    """Token bucket rate limiter with both async and sync interfaces.
 
     Tokens are added at a fixed rate up to a maximum burst size.
-    Callers block (via asyncio.sleep) until a token is available.
+    Callers block until a token is available.
 
     Args:
         rate: Tokens added per second.
@@ -30,6 +31,7 @@ class TokenBucketRateLimiter:
         self._tokens = float(burst)
         self._last_refill = time.monotonic()
         self._lock = asyncio.Lock()
+        self._sync_lock = threading.Lock()
 
     def _refill(self) -> None:
         """Add tokens based on elapsed time since last refill."""
@@ -39,7 +41,7 @@ class TokenBucketRateLimiter:
         self._last_refill = now
 
     async def acquire(self) -> None:
-        """Block until a token is available, then consume one."""
+        """Async: block until a token is available, then consume one."""
         while True:
             async with self._lock:
                 self._refill()
@@ -49,6 +51,20 @@ class TokenBucketRateLimiter:
                 # Calculate wait time for the next token
                 wait = (1.0 - self._tokens) / self._rate
             await asyncio.sleep(wait)
+
+    def acquire_sync(self) -> None:
+        """Sync: block until a token is available, then consume one.
+
+        Uses ``threading.Lock`` + ``time.sleep`` — safe for sync callers.
+        """
+        while True:
+            with self._sync_lock:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) / self._rate
+            time.sleep(wait)
 
 
 def async_retry_with_backoff(

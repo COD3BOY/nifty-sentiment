@@ -188,7 +188,7 @@ All config lives in `config.yaml`:
 3. ~~**No NSE holiday calendar**~~ — **FIXED**: 34 NSE holidays for 2025-2026 in `market_hours.py`.
 4. **Neutral vol fallback (V4)** — When `get_today_vol_snapshot()` fails, Atlas uses all percentiles = 0.5. This produces valid but meaningless thresholds that mask data quality problems.
 5. ~~**No chain validation**~~ — **FIXED**: `core/validation.py` has `validate_option_chain()` with 5+ checks.
-6. **No startup health checks** — Dashboard starts even if database, config, or API keys are missing.
+6. ~~**No startup health checks**~~ — **FIXED**: `core/health.py` runs 5 checks at startup; System Health tab in dashboard.
 
 See `docs/production-readiness.md` for the full gap analysis and prioritized checklist.
 
@@ -227,3 +227,16 @@ See `docs/production-readiness.md` for the full gap analysis and prioritized che
 | 2026-02-11 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` (new) | Deployment artifacts | No containerized deployment option |
 | 2026-02-11 | `tests/` (new, 8 files) | 319 tests covering IV, greeks, indicators, vol, validation, models, engine, atlas | Zero tests previously |
 | 2026-02-11 | `docs/production-readiness.md` | Full rewrite with audit findings and remediation status | Previous version listed gaps without solutions |
+| 2026-02-11 | `core/rate_limiter.py` | Add `acquire_sync()` with `threading.Lock` for sync callers | Existing `acquire()` was async-only; sync callers (nse_fetcher, vol_distribution, etc.) couldn't use it |
+| 2026-02-11 | `core/api_guard.py` (new) | Combined rate limiter + circuit breaker guard functions | Thin wrappers that combine both mechanisms per API type, keeping call-site changes minimal |
+| 2026-02-11 | `sources/vix.py`, `global_markets.py`, `crude_oil.py` | Wire yfinance rate limiter + circuit breaker guards | yfinance calls had no rate limiting or failure tracking |
+| 2026-02-11 | `core/vol_distribution.py` | Wire yfinance guards around both `yf.download()` calls | yfinance calls had no rate limiting or failure tracking |
+| 2026-02-11 | `core/engine.py` | Wire yfinance guard in `update_market_actuals()` | yfinance call had no rate limiting or failure tracking |
+| 2026-02-11 | `core/intraday_fetcher.py` | Wire Kite + yfinance guards around API calls | Both Kite and yfinance calls had no rate limiting or failure tracking |
+| 2026-02-11 | `core/nse_fetcher.py` | Wire Kite guards around `instruments()`, `quote()` calls | Kite calls had no rate limiting or failure tracking |
+| 2026-02-11 | `core/kite_margins.py` | Wire Kite guards around `instruments()`, `basket_order_margins()`, `get_virtual_contract_note()` | Kite calls had no rate limiting or failure tracking |
+| 2026-02-11 | `analyzers/claude_analyzer.py` | Wire Claude guards around both `messages.create()` calls | Claude API calls had no rate limiting or failure tracking |
+| 2026-02-11 | `analyzers/trade_criticizer.py` | Wire Claude guard around `messages.create()` call | Claude API call had no rate limiting or failure tracking |
+| 2026-02-11 | `core/health.py` (new) | 5 startup health checks (config, database, data dir, Kite creds, Anthropic key) | Dashboard started even if DB/config/API keys missing (Known Issue #6) |
+| 2026-02-11 | `ui/system_health_tab.py` (new) | System Health monitoring tab: startup checks, circuit breakers, data freshness, audit trail | No system health visibility in dashboard |
+| 2026-02-11 | `app.py` | Add startup health checks + System Health tab as first tab | No health monitoring; Known Issue #6 |

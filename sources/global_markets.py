@@ -39,10 +39,18 @@ class GlobalMarketsSource(DataSource):
         bullish = []
         bearish = []
 
+        from core.api_guard import yf_guard_async
+
         for ticker, meta in indices_config.items():
             try:
-                info = yf.Ticker(ticker)
-                hist = info.history(period="2d")
+                cb = await yf_guard_async()
+                try:
+                    info = yf.Ticker(ticker)
+                    hist = info.history(period="2d")
+                    cb.record_success()
+                except Exception:
+                    cb.record_failure()
+                    raise
                 if len(hist) < 2:
                     continue
 

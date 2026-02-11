@@ -46,12 +46,20 @@ class KiteOptionChainFetcher:
 
     def fetch(self, symbol: str = "NIFTY") -> OptionChainData:
         """Fetch option chain for *symbol* from Kite Connect."""
+        from core.api_guard import kite_guard_sync
+
         kite = self._get_kite()
         if kite is None:
             raise ValueError("Kite Connect credentials not configured (KITE_API_KEY / KITE_ACCESS_TOKEN)")
 
         # 1. Get all NFO instruments and filter for this symbol
-        all_instruments = kite.instruments("NFO")
+        cb = kite_guard_sync()
+        try:
+            all_instruments = kite.instruments("NFO")
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
         option_instruments = [
             inst for inst in all_instruments
             if inst["name"] == symbol
@@ -75,8 +83,14 @@ class KiteOptionChainFetcher:
         # 3. Get underlying value
         index_symbol = "NSE:NIFTY 50" if symbol == "NIFTY" else f"NSE:{symbol}"
         try:
-            index_quote = kite.quote([index_symbol])
-            underlying = index_quote[index_symbol]["last_price"]
+            cb = kite_guard_sync()
+            try:
+                index_quote = kite.quote([index_symbol])
+                underlying = index_quote[index_symbol]["last_price"]
+                cb.record_success()
+            except Exception:
+                cb.record_failure()
+                raise
         except Exception as e:
             _check_token_error(e)
             logger.error("Failed to fetch underlying quote for %s: %s", index_symbol, e)
@@ -87,7 +101,13 @@ class KiteOptionChainFetcher:
         quotes: dict = {}
         for i in range(0, len(trading_symbols), self._QUOTE_BATCH_SIZE):
             batch = trading_symbols[i : i + self._QUOTE_BATCH_SIZE]
-            quotes.update(kite.quote(batch))
+            cb = kite_guard_sync()
+            try:
+                quotes.update(kite.quote(batch))
+                cb.record_success()
+            except Exception:
+                cb.record_failure()
+                raise
 
         # 5. Build a lookup: strike -> {CE: quote, PE: quote}
         strike_map: dict[float, dict[str, dict]] = {}

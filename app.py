@@ -19,8 +19,10 @@ import streamlit.components.v1 as components
 
 from core.config import load_config
 from core.engine import SentimentEngine
+from core.health import run_startup_checks
 from core.models import SentimentLevel
 from ui.options_desk_tab import render_options_desk_tab
+from ui.system_health_tab import render_system_health_tab
 
 st.set_page_config(
     page_title="NIFTY Sentiment Dashboard",
@@ -29,6 +31,14 @@ st.set_page_config(
 )
 
 config = load_config()
+
+# --- Startup Health Checks ---
+if "startup_checks" not in st.session_state:
+    st.session_state.startup_checks = run_startup_checks()
+    # Warn on critical failures
+    for check in st.session_state.startup_checks:
+        if not check["ok"] and check.get("critical"):
+            st.warning(f"Startup check failed: **{check['name']}** — {check['message']}")
 
 # --- Session State Init ---
 if "engine" not in st.session_state:
@@ -142,14 +152,20 @@ _enabled_algos = [
 # TABS
 # ============================================================
 _algo_tab_labels = [f"📈 {_algo_registry[n].display_name}" for n in _enabled_algos]
-_all_tab_labels = ["🌅 Pre-Market Analysis", "⚡ Options Desk"] + _algo_tab_labels
+_all_tab_labels = ["🏥 System Health", "🌅 Pre-Market Analysis", "⚡ Options Desk"] + _algo_tab_labels
 if len(_enabled_algos) >= 2:
     _all_tab_labels.append("📊 Comparison")
 _all_tabs = st.tabs(_all_tab_labels)
-tab_premarket, tab_options = _all_tabs[0], _all_tabs[1]
-algo_tabs = _all_tabs[2:2 + len(_enabled_algos)]
+tab_health, tab_premarket, tab_options = _all_tabs[0], _all_tabs[1], _all_tabs[2]
+algo_tabs = _all_tabs[3:3 + len(_enabled_algos)]
 tab_comparison = _all_tabs[-1] if len(_enabled_algos) >= 2 else None
 
+
+# ============================================================
+# TAB 0: SYSTEM HEALTH
+# ============================================================
+with tab_health:
+    render_system_health_tab()
 
 # ============================================================
 # TAB 1: PRE-MARKET ANALYSIS

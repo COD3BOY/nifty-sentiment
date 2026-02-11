@@ -30,8 +30,16 @@ class VIXSource(DataSource):
         spike_amplification = cfg.get("spike_amplification", 0.3)
 
         try:
-            vix = yf.Ticker(ticker)
-            hist = vix.history(period="5d")
+            from core.api_guard import yf_guard_async
+
+            cb = await yf_guard_async()
+            try:
+                vix = yf.Ticker(ticker)
+                hist = vix.history(period="5d")
+                cb.record_success()
+            except Exception:
+                cb.record_failure()
+                raise
 
             if len(hist) < 2:
                 return SentimentScore(

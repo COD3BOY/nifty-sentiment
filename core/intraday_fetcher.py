@@ -49,6 +49,8 @@ class IntradayCandleFetcher:
 
     def _fetch_kite(self, period: str, interval: str) -> pd.DataFrame:
         """Fetch OHLCV candles from Kite historical data API."""
+        from core.api_guard import kite_guard_sync
+
         kite = self._get_kite()
         if kite is None:
             raise ValueError("Kite credentials not configured")
@@ -62,12 +64,18 @@ class IntradayCandleFetcher:
         days = int(period.rstrip("d"))
         from_date = now - timedelta(days=days)
 
-        records = kite.historical_data(
-            instrument_token=_NIFTY_50_TOKEN,
-            from_date=from_date,
-            to_date=now,
-            interval=kite_interval,
-        )
+        cb = kite_guard_sync()
+        try:
+            records = kite.historical_data(
+                instrument_token=_NIFTY_50_TOKEN,
+                from_date=from_date,
+                to_date=now,
+                interval=kite_interval,
+            )
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
 
         if not records:
             raise ValueError("Kite returned empty historical data")
@@ -95,9 +103,16 @@ class IntradayCandleFetcher:
     def _fetch_yfinance(self, period: str, interval: str) -> pd.DataFrame:
         """Fetch OHLCV candles from yfinance (fallback)."""
         import yfinance as yf
+        from core.api_guard import yf_guard_sync
 
-        tick = yf.Ticker(self._ticker)
-        df = tick.history(period=period, interval=interval)
+        cb = yf_guard_sync()
+        try:
+            tick = yf.Ticker(self._ticker)
+            df = tick.history(period=period, interval=interval)
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
 
         if df.empty:
             logger.warning("yfinance returned empty DataFrame for %s", self._ticker)

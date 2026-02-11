@@ -30,6 +30,8 @@ class CrudeOilSource(DataSource):
         crude_weight = cfg.get("crude_weight", 0.6)
         inr_weight = cfg.get("inr_weight", 0.4)
 
+        from core.api_guard import yf_guard_async
+
         crude_score = 0.0
         inr_score = 0.0
         bullish = []
@@ -38,8 +40,14 @@ class CrudeOilSource(DataSource):
 
         # Brent Crude
         try:
-            crude = yf.Ticker(crude_ticker)
-            hist = crude.history(period="5d")
+            cb = await yf_guard_async()
+            try:
+                crude = yf.Ticker(crude_ticker)
+                hist = crude.history(period="5d")
+                cb.record_success()
+            except Exception:
+                cb.record_failure()
+                raise
             if len(hist) >= 2:
                 prev = hist["Close"].iloc[-2]
                 current = hist["Close"].iloc[-1]
@@ -61,8 +69,14 @@ class CrudeOilSource(DataSource):
 
         # USD/INR
         try:
-            inr = yf.Ticker(inr_ticker)
-            hist = inr.history(period="5d")
+            cb = await yf_guard_async()
+            try:
+                inr = yf.Ticker(inr_ticker)
+                hist = inr.history(period="5d")
+                cb.record_success()
+            except Exception:
+                cb.record_failure()
+                raise
             if len(hist) >= 2:
                 prev = hist["Close"].iloc[-2]
                 current = hist["Close"].iloc[-1]

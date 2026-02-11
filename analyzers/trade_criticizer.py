@@ -234,19 +234,27 @@ def criticize_trade(
 
 Please provide a thorough critique following the output schema exactly."""
 
+    from core.api_guard import claude_guard_sync
+
     client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-        output_config={
-            "format": {
-                "type": "json_schema",
-                "schema": TRADE_CRITIQUE_SCHEMA,
+    cb = claude_guard_sync()
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": TRADE_CRITIQUE_SCHEMA,
+                },
             },
-        },
-    )
+        )
+        cb.record_success()
+    except Exception:
+        cb.record_failure()
+        raise
 
     result = json.loads(response.content[0].text)
 

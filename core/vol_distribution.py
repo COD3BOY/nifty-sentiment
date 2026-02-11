@@ -50,9 +50,23 @@ def _fetch_raw_data(start_date: str = "2022-01-01") -> pd.DataFrame | None:
     """Download NIFTY close + India VIX close via yfinance, merged."""
     try:
         import yfinance as yf
+        from core.api_guard import yf_guard_sync
 
-        nifty = yf.download("^NSEI", start=start_date, auto_adjust=True, progress=False)
-        vix = yf.download("^INDIAVIX", start=start_date, auto_adjust=True, progress=False)
+        cb = yf_guard_sync()
+        try:
+            nifty = yf.download("^NSEI", start=start_date, auto_adjust=True, progress=False)
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
+
+        cb = yf_guard_sync()
+        try:
+            vix = yf.download("^INDIAVIX", start=start_date, auto_adjust=True, progress=False)
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
 
         if nifty.empty or vix.empty:
             logger.warning("VOL_DIST: Empty data from yfinance (NIFTY=%d, VIX=%d)",

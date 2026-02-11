@@ -65,10 +65,18 @@ _INSTRUMENT_CACHE_TTL = 600  # 10 minutes
 
 def _get_nfo_instruments(kite) -> list[dict]:
     """Get NFO instruments, cached for 10 minutes."""
+    from core.api_guard import kite_guard_sync
+
     global _instrument_cache, _instrument_cache_ts
     if _instrument_cache is not None and (time.time() - _instrument_cache_ts) < _INSTRUMENT_CACHE_TTL:
         return _instrument_cache
-    _instrument_cache = kite.instruments("NFO")
+    cb = kite_guard_sync()
+    try:
+        _instrument_cache = kite.instruments("NFO")
+        cb.record_success()
+    except Exception:
+        cb.record_failure()
+        raise
     _instrument_cache_ts = time.time()
     return _instrument_cache
 
@@ -132,6 +140,8 @@ def get_kite_margin(
         return None
 
     try:
+        from core.api_guard import kite_guard_sync
+
         orders = []
         for leg in legs:
             tsym = _lookup_tradingsymbol(kite, "NIFTY", expiry, leg["strike"], leg["option_type"])
@@ -147,7 +157,13 @@ def get_kite_margin(
                 "order_type": "MARKET",
                 "quantity": lots * lot_size,
             })
-        result = kite.basket_order_margins(orders)
+        cb = kite_guard_sync()
+        try:
+            result = kite.basket_order_margins(orders)
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
         total_margin = result["final"]["total"]
         if total_margin <= 0:
             return None  # API returned zero — likely expired token
@@ -178,6 +194,8 @@ def get_kite_charges(
         return None
 
     try:
+        from core.api_guard import kite_guard_sync
+
         # Build entry + exit orders (round-trip)
         orders = []
         for leg in legs:
@@ -208,7 +226,13 @@ def get_kite_charges(
                 "quantity": qty,
                 "average_price": leg["ltp"],
             })
-        result = kite.get_virtual_contract_note(orders)
+        cb = kite_guard_sync()
+        try:
+            result = kite.get_virtual_contract_note(orders)
+            cb.record_success()
+        except Exception:
+            cb.record_failure()
+            raise
         total_charges = sum(item.get("charges", {}).get("total", 0) for item in result)
         _cache_set(cache_key, total_charges)
         return total_charges

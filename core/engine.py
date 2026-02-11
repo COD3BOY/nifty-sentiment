@@ -165,11 +165,19 @@ class SentimentEngine:
     def update_market_actuals(self) -> None:
         """Fetch and store actual NIFTY close for accuracy tracking."""
         import yfinance as yf
+        from core.api_guard import yf_guard_sync
+
         ticker = self.config.get("engine", {}).get("nifty_ticker", "^NSEI")
 
         try:
-            nifty = yf.Ticker(ticker)
-            hist = nifty.history(period="5d")
+            cb = yf_guard_sync()
+            try:
+                nifty = yf.Ticker(ticker)
+                hist = nifty.history(period="5d")
+                cb.record_success()
+            except Exception:
+                cb.record_failure()
+                raise
             for idx, row in hist.iterrows():
                 self.db.save_market_actual(
                     date=idx.to_pydatetime(),
