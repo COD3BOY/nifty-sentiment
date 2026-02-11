@@ -55,22 +55,46 @@ def _get_kite():
 
 
 # ---------------------------------------------------------------------------
-# Trading symbol builder
+# Trading symbol lookup from Kite instruments
 # ---------------------------------------------------------------------------
 
-def _build_tradingsymbol(
-    symbol: str, expiry: str, strike: float, option_type: str,
-) -> str:
-    """Convert leg params to Kite-format trading symbol.
+_instrument_cache: dict[str, list[dict]] | None = None
+_instrument_cache_ts: float = 0.0
+_INSTRUMENT_CACHE_TTL = 600  # 10 minutes
 
-    Example: ("NIFTY", "06-Feb-2026", 23000.0, "CE") -> "NIFTY26020623000CE"
+
+def _get_nfo_instruments(kite) -> list[dict]:
+    """Get NFO instruments, cached for 10 minutes."""
+    global _instrument_cache, _instrument_cache_ts
+    if _instrument_cache is not None and (time.time() - _instrument_cache_ts) < _INSTRUMENT_CACHE_TTL:
+        return _instrument_cache
+    _instrument_cache = kite.instruments("NFO")
+    _instrument_cache_ts = time.time()
+    return _instrument_cache
+
+
+def _lookup_tradingsymbol(
+    kite, symbol: str, expiry_str: str, strike: float, option_type: str,
+) -> str | None:
+    """Look up the actual trading symbol from Kite's instrument list.
+
+    Parameters
+    ----------
+    expiry_str : expiry in ``dd-Mon-YYYY`` format (e.g. "17-Feb-2026")
+
+    Returns the tradingsymbol string or None if not found.
     """
-    dt = datetime.strptime(expiry, "%d-%b-%Y")
-    yy = dt.strftime("%y")
-    mm = dt.strftime("%m")
-    dd = dt.strftime("%d")
-    strike_int = int(strike)
-    return f"{symbol}{yy}{mm}{dd}{strike_int}{option_type}"
+    expiry_date = datetime.strptime(expiry_str, "%d-%b-%Y").date()
+    instruments = _get_nfo_instruments(kite)
+    for inst in instruments:
+        if (
+            inst["name"] == symbol
+            and inst["expiry"] == expiry_date
+            and inst["strike"] == strike
+            and inst["instrument_type"] == option_type
+        ):
+            return inst["tradingsymbol"]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -108,18 +132,21 @@ def get_kite_margin(
         return None
 
     try:
-        orders = [
-            {
+        orders = []
+        for leg in legs:
+            tsym = _lookup_tradingsymbol(kite, "NIFTY", expiry, leg["strike"], leg["option_type"])
+            if tsym is None:
+                logger.warning("Trading symbol not found: NIFTY %s %s %s", expiry, leg["strike"], leg["option_type"])
+                return None
+            orders.append({
                 "exchange": "NFO",
-                "tradingsymbol": _build_tradingsymbol("NIFTY", expiry, leg["strike"], leg["option_type"]),
+                "tradingsymbol": tsym,
                 "transaction_type": "SELL" if leg["action"] == "SELL" else "BUY",
                 "variety": "regular",
                 "product": "NRML",
                 "order_type": "MARKET",
                 "quantity": lots * lot_size,
-            }
-            for leg in legs
-        ]
+            })
         result = kite.basket_order_margins(orders)
         total_margin = result["final"]["total"]
         if total_margin <= 0:
@@ -154,7 +181,10 @@ def get_kite_charges(
         # Build entry + exit orders (round-trip)
         orders = []
         for leg in legs:
-            tsym = _build_tradingsymbol("NIFTY", expiry, leg["strike"], leg["option_type"])
+            tsym = _lookup_tradingsymbol(kite, "NIFTY", expiry, leg["strike"], leg["option_type"])
+            if tsym is None:
+                logger.warning("Trading symbol not found for charges: NIFTY %s %s %s", expiry, leg["strike"], leg["option_type"])
+                return None
             qty = lots * lot_size
             # Entry order
             orders.append({
