@@ -13,7 +13,7 @@ from core.indicators import (
     compute_vwap,
 )
 from core.intraday_fetcher import IntradayCandleFetcher
-from core.nse_fetcher import KiteOptionChainFetcher, NseOptionChainFetcher
+from core.nse_fetcher import KiteOptionChainFetcher
 from core.options_analytics import build_analytics
 from core.options_models import (
     OptionChainData,
@@ -37,7 +37,6 @@ class OptionsDeskEngine:
         symbol = cfg.get("symbol", "NIFTY")
         ticker = cfg.get("nifty_ticker", "^NSEI")
         self._symbol = symbol
-        self._nse = NseOptionChainFetcher()
         self._kite_chain = KiteOptionChainFetcher()
         self._candle = IntradayCandleFetcher(ticker=ticker)
         self._last_df: pd.DataFrame | None = None
@@ -50,25 +49,17 @@ class OptionsDeskEngine:
         analytics: OptionsAnalytics | None = None
         technicals: TechnicalIndicators | None = None
 
-        # Fetch option chain — try Kite first, fall back to NSE
+        # Fetch option chain via Kite Connect
         try:
             chain = self._kite_chain.fetch(self._symbol)
             if not chain.strikes:
                 raise ValueError("Kite returned empty data")
             analytics = build_analytics(chain)
             logger.info("Option chain loaded via Kite Connect (%d strikes)", len(chain.strikes))
-        except Exception as kite_exc:
-            logger.warning("Kite option chain failed: %s — trying NSE", kite_exc)
-            try:
-                chain = self._nse.fetch(self._symbol)
-                if not chain.strikes:
-                    raise ValueError("NSE returned empty data")
-                analytics = build_analytics(chain)
-                logger.info("Option chain loaded via NSE (%d strikes)", len(chain.strikes))
-            except Exception as nse_exc:
-                logger.error("NSE option chain also failed: %s", nse_exc)
-                errors.append(f"Option chain unavailable: Kite={kite_exc}, NSE={nse_exc}")
-                chain = None
+        except Exception as exc:
+            logger.error("Option chain fetch failed: %s", exc)
+            errors.append(f"Option chain unavailable: {exc}")
+            chain = None
 
         # Fetch candles
         candle_cfg = self._cfg.get("candles", {})
