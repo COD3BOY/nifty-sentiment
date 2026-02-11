@@ -1,17 +1,19 @@
-streamlit>=1.30.0
-streamlit-autorefresh>=1.0.1
-pydantic>=2.5.0
-sqlalchemy>=2.0.0
-pyyaml>=6.0
-python-dotenv>=1.0.0
-yfinance>=0.2.30
-feedparser>=6.0.0
-anthropic>=0.40.0
-plotly>=5.18.0
-beautifulsoup4>=4.12.0
-requests>=2.31.0
-aiohttp>=3.9.0
-kiteconnect>=5.0.0
-nsepython>=1.0
-# praw>=7.7.0              # Reddit sentiment (optional)
-# youtube-transcript-api>=0.6.0  # YouTube sentiment (optional)
+streamlit==1.54.0
+streamlit-autorefresh==1.0.1
+pydantic==2.12.5
+sqlalchemy==2.0.46
+pyyaml==6.0
+python-dotenv==1.0.0
+yfinance==1.1.0
+feedparser==6.0.12
+anthropic==0.79.0
+plotly==6.5.2
+beautifulsoup4==4.12.2
+requests==2.32.5
+aiohttp==3.8.4
+kiteconnect==5.0.1
+nsepython==2.97
+numpy==2.2.6
+pandas==2.3.3
+# praw==7.7.0              # Reddit sentiment (optional)
+# youtube-transcript-api==0.6.0  # YouTube sentiment (optional)

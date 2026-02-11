@@ -2,6 +2,7 @@
 
 import logging
 
+import pandas as pd
 import yfinance as yf
 
 from core.config import get_source_config
@@ -42,6 +43,17 @@ class VIXSource(DataSource):
 
             current_vix = hist["Close"].iloc[-1]
             prev_vix = hist["Close"].iloc[-2]
+
+            if pd.isna(current_vix) or pd.isna(prev_vix) or prev_vix == 0:
+                return SentimentScore(
+                    source_name=self.name,
+                    score=0.0,
+                    confidence=0.0,
+                    explanation="VIX data contains NaN values",
+                )
+
+            current_vix = float(current_vix)
+            prev_vix = float(prev_vix)
             day_change_pct = ((current_vix - prev_vix) / prev_vix) * 100
 
             # VIX scoring: inverse relationship

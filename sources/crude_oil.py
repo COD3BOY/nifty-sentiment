@@ -2,6 +2,7 @@
 
 import logging
 
+import pandas as pd
 import yfinance as yf
 
 from core.config import get_source_config
@@ -42,16 +43,19 @@ class CrudeOilSource(DataSource):
             if len(hist) >= 2:
                 prev = hist["Close"].iloc[-2]
                 current = hist["Close"].iloc[-1]
-                change_pct = ((current - prev) / prev) * 100
-                # Rising crude is bearish for India (imports 85% of crude)
-                crude_score = max(-1.0, min(1.0, -change_pct / 3.0))
-                raw["crude_price"] = current
-                raw["crude_change_pct"] = change_pct
+                if not pd.isna(current) and not pd.isna(prev) and prev != 0:
+                    current = float(current)
+                    prev = float(prev)
+                    change_pct = ((current - prev) / prev) * 100
+                    # Rising crude is bearish for India (imports 85% of crude)
+                    crude_score = max(-1.0, min(1.0, -change_pct / 3.0))
+                    raw["crude_price"] = current
+                    raw["crude_change_pct"] = change_pct
 
-                if change_pct > 1:
-                    bearish.append(f"Brent crude up {change_pct:.1f}% (import cost pressure)")
-                elif change_pct < -1:
-                    bullish.append(f"Brent crude down {change_pct:.1f}% (import cost relief)")
+                    if change_pct > 1:
+                        bearish.append(f"Brent crude up {change_pct:.1f}% (import cost pressure)")
+                    elif change_pct < -1:
+                        bullish.append(f"Brent crude down {change_pct:.1f}% (import cost relief)")
         except Exception as e:
             logger.warning(f"Crude oil fetch failed: {e}")
 
@@ -62,16 +66,19 @@ class CrudeOilSource(DataSource):
             if len(hist) >= 2:
                 prev = hist["Close"].iloc[-2]
                 current = hist["Close"].iloc[-1]
-                change_pct = ((current - prev) / prev) * 100
-                # Rising USD/INR (weakening rupee) is bearish
-                inr_score = max(-1.0, min(1.0, -change_pct / 1.0))
-                raw["usdinr"] = current
-                raw["usdinr_change_pct"] = change_pct
+                if not pd.isna(current) and not pd.isna(prev) and prev != 0:
+                    current = float(current)
+                    prev = float(prev)
+                    change_pct = ((current - prev) / prev) * 100
+                    # Rising USD/INR (weakening rupee) is bearish
+                    inr_score = max(-1.0, min(1.0, -change_pct / 1.0))
+                    raw["usdinr"] = current
+                    raw["usdinr_change_pct"] = change_pct
 
-                if change_pct > 0.2:
-                    bearish.append(f"INR weakened {change_pct:.2f}% vs USD")
-                elif change_pct < -0.2:
-                    bullish.append(f"INR strengthened {change_pct:.2f}% vs USD")
+                    if change_pct > 0.2:
+                        bearish.append(f"INR weakened {change_pct:.2f}% vs USD")
+                    elif change_pct < -0.2:
+                        bullish.append(f"INR strengthened {change_pct:.2f}% vs USD")
         except Exception as e:
             logger.warning(f"USD/INR fetch failed: {e}")
 

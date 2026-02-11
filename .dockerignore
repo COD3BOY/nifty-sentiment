@@ -1,0 +1,14 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+.pytest_cache
+data/nifty_sentiment.db
+data/logs/
+data/*.bak
+data/*.tmp
+.streamlit/secrets.toml
+*.egg-info
+.venv
+venv

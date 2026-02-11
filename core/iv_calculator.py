@@ -57,6 +57,9 @@ def bs_price(
     sigma : volatility (annual, decimal — e.g. 0.15 for 15%)
     option_type : ``"CE"`` for call, ``"PE"`` for put
     """
+    if S <= 0 or K <= 0:
+        return 0.0
+
     if T <= 0 or sigma <= 0:
         # Return intrinsic value
         if option_type == "CE":
@@ -75,7 +78,7 @@ def bs_price(
 
 def bs_vega(S: float, K: float, T: float, r: float, sigma: float) -> float:
     """Black-Scholes vega (dPrice/dSigma)."""
-    if T <= 0 or sigma <= 0:
+    if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
         return 0.0
 
     sqrt_T = math.sqrt(T)
@@ -101,19 +104,26 @@ def implied_volatility(
     T: float,
     r: float,
     option_type: str,
-) -> float:
+) -> float | None:
     """Solve for implied volatility via Newton-Raphson.
 
     Returns IV as a **percentage** (e.g. 14.5 for 14.5%) to match the
-    convention used by NSE.
+    convention used by NSE, or ``None`` if IV cannot be computed.
     """
+    import logging
+
+    _logger = logging.getLogger(__name__)
+
     # --- Pre-checks ---
+    if S <= 0 or K <= 0:
+        return None
+
     if market_price <= 0 or T <= 0:
-        return 0.0
+        return None
 
     intrinsic = max(S - K, 0.0) if option_type == "CE" else max(K - S, 0.0)
     if market_price < intrinsic:
-        return 0.0
+        return None
 
     # --- Newton-Raphson ---
     sigma = _INITIAL_GUESS
@@ -134,8 +144,15 @@ def implied_volatility(
         sigma -= diff / vega
         sigma = max(_SIGMA_MIN, min(sigma, _SIGMA_MAX))
     else:
-        # Converged within tolerance on last iteration
-        return sigma * 100.0
+        # Loop completed without convergence or early break
+        final_price = bs_price(S, K, T, r, sigma, option_type)
+        if abs(final_price - market_price) < _TOLERANCE * 10:
+            return sigma * 100.0
+        _logger.debug(
+            "Newton-Raphson did not converge: S=%.1f K=%.1f T=%.4f diff=%.4f",
+            S, K, T, final_price - market_price,
+        )
+        return None
 
     # --- Bisection fallback ---
     lo, hi = _SIGMA_MIN, _SIGMA_MAX
@@ -150,7 +167,15 @@ def implied_volatility(
         else:
             hi = mid
 
-    return ((lo + hi) / 2.0) * 100.0
+    # Bisection finished without meeting tolerance
+    result = ((lo + hi) / 2.0) * 100.0
+    final_price = bs_price(S, K, T, r, (lo + hi) / 2.0, option_type)
+    if abs(final_price - market_price) < _TOLERANCE * 100:
+        _logger.debug("Bisection returning approximate IV=%.2f%%", result)
+        return result
+
+    _logger.debug("Bisection did not converge: S=%.1f K=%.1f T=%.4f", S, K, T)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -210,16 +235,16 @@ def compute_iv_for_chain(
 
         # Compute CE IV
         ce_iv = 0.0
-        if strike.ce_ltp > 0:
+        if strike.ce_ltp > 0 and not (isinstance(strike.ce_ltp, float) and math.isnan(strike.ce_ltp)):
             raw = implied_volatility(strike.ce_ltp, S, K, T, r, "CE")
-            if _IV_FLOOR <= raw <= _IV_CAP:
+            if raw is not None and _IV_FLOOR <= raw <= _IV_CAP:
                 ce_iv = round(raw, 2)
 
         # Compute PE IV
         pe_iv = 0.0
-        if strike.pe_ltp > 0:
+        if strike.pe_ltp > 0 and not (isinstance(strike.pe_ltp, float) and math.isnan(strike.pe_ltp)):
             raw = implied_volatility(strike.pe_ltp, S, K, T, r, "PE")
-            if _IV_FLOOR <= raw <= _IV_CAP:
+            if raw is not None and _IV_FLOOR <= raw <= _IV_CAP:
                 pe_iv = round(raw, 2)
 
         result.append(strike.model_copy(update={"ce_iv": ce_iv, "pe_iv": pe_iv}))

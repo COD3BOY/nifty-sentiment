@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 
 from core.config import load_config
+from core.error_types import AuthenticationError, DataFetchError
 from core.iv_calculator import compute_iv_for_chain
 from core.options_models import OptionChainData, StrikeData
 
@@ -76,7 +77,9 @@ class KiteOptionChainFetcher:
         try:
             index_quote = kite.quote([index_symbol])
             underlying = index_quote[index_symbol]["last_price"]
-        except Exception:
+        except Exception as e:
+            _check_token_error(e)
+            logger.error("Failed to fetch underlying quote for %s: %s", index_symbol, e)
             underlying = 0.0
 
         # 4. Batch quote all option instruments
@@ -164,3 +167,35 @@ class KiteOptionChainFetcher:
             total_ce_oi=total_ce_oi,
             total_pe_oi=total_pe_oi,
         )
+
+
+def _check_token_error(exc: Exception) -> None:
+    """Raise AuthenticationError if the exception looks like a Kite token issue."""
+    try:
+        from kiteconnect.exceptions import TokenException
+        if isinstance(exc, TokenException):
+            raise AuthenticationError(
+                "Kite access token expired or invalid. "
+                "Regenerate via utils/kite_auth.py and update KITE_ACCESS_TOKEN."
+            ) from exc
+    except ImportError:
+        pass
+    exc_str = str(exc).lower()
+    if "token" in exc_str and ("invalid" in exc_str or "expired" in exc_str):
+        raise AuthenticationError(
+            "Kite access token appears invalid. "
+            "Regenerate via utils/kite_auth.py and update KITE_ACCESS_TOKEN."
+        ) from exc
+
+
+def is_kite_token_valid() -> bool:
+    """Quick health check — attempt a lightweight Kite API call."""
+    try:
+        fetcher = KiteOptionChainFetcher()
+        kite = fetcher._get_kite()
+        if kite is None:
+            return False
+        kite.profile()
+        return True
+    except Exception:
+        return False

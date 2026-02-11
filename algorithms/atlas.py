@@ -16,8 +16,6 @@ from __future__ import annotations
 import logging
 import math
 import time as _time
-from datetime import datetime, timedelta, timezone
-
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
 from core.event_calendar import is_near_event
@@ -47,12 +45,20 @@ from core.paper_trading_models import (
     PositionStatus,
     StrategyType,
     TradeRecord,
+    _now_ist,
+)
+from core.options_utils import (
+    get_strike_data as _get_strike_data,
+    compute_spread_width as _compute_spread_width,
+    compute_bb_width_pct as _compute_bb_width_pct,
+    parse_dte as _parse_dte,
+    is_breakout as _is_breakout,
+    reset_period_tracking as _reset_period_tracking,
+    compute_expected_move as _compute_expected_move,
 )
 from core.vol_distribution import VolSnapshot, get_today_vol_snapshot
 
 logger = logging.getLogger(__name__)
-
-_IST = timezone(timedelta(hours=5, minutes=30))
 
 # ---------------------------------------------------------------------------
 # Strategy classification sets (same as optimus.py)
@@ -87,10 +93,6 @@ _SPREAD_STRATEGIES = {
     StrategyName.BULL_CALL_SPREAD,
     StrategyName.BEAR_PUT_SPREAD,
 }
-
-
-def _now_ist() -> datetime:
-    return datetime.now(_IST)
 
 
 # ---------------------------------------------------------------------------
@@ -213,77 +215,6 @@ def _get_all_dynamic_params(vol: VolSnapshot, cfg: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Helpers (shared with hedge.py pattern)
-# ---------------------------------------------------------------------------
-
-def _compute_expected_move(spot: float, vix: float, dte: int) -> float:
-    if spot <= 0 or vix <= 0 or dte <= 0:
-        return 0.0
-    return spot * (vix / 100.0) * math.sqrt(dte / 365.0)
-
-
-def _parse_dte(expiry_str: str) -> int:
-    try:
-        expiry_date = datetime.strptime(expiry_str, "%d-%b-%Y").date()
-        today = _now_ist().date()
-        return max(0, (expiry_date - today).days)
-    except (ValueError, TypeError):
-        return 0
-
-
-def _get_strike_data(chain: OptionChainData, strike_price: float):
-    for s in chain.strikes:
-        if s.strike_price == strike_price:
-            return s
-    return None
-
-
-def _compute_spread_width(legs: list[TradeLeg]) -> float:
-    strikes = sorted(set(leg.strike for leg in legs))
-    if len(strikes) >= 2:
-        return strikes[-1] - strikes[0]
-    return 0.0
-
-
-def _compute_bb_width_pct(technicals: TechnicalIndicators) -> float:
-    if technicals.bb_middle > 0:
-        return ((technicals.bb_upper - technicals.bb_lower) / technicals.bb_middle) * 100
-    return 0.0
-
-
-def _is_breakout(technicals: TechnicalIndicators) -> bool:
-    if technicals.bb_upper <= 0:
-        return False
-    above_bb = technicals.spot > technicals.bb_upper
-    below_bb = technicals.spot < technicals.bb_lower
-    if above_bb and technicals.supertrend_direction == 1:
-        return True
-    if below_bb and technicals.supertrend_direction == -1:
-        return True
-    return False
-
-
-def _reset_period_tracking(state: PaperTradingState, cfg: dict) -> PaperTradingState:
-    now = _now_ist()
-    today_str = now.strftime("%Y-%m-%d")
-    current_capital = state.initial_capital + state.net_realized_pnl
-    updates: dict = {}
-
-    if state.session_date != today_str:
-        updates["session_date"] = today_str
-        updates["daily_start_capital"] = current_capital
-
-    current_week = now.strftime("%Y-W%W")
-    if state.week_start_date != current_week:
-        updates["week_start_date"] = current_week
-        updates["weekly_start_capital"] = current_capital
-
-    if updates:
-        return state.model_copy(update=updates)
-    return state
-
-
 # ===================================================================
 # Trade Construction — Iron Condor (dynamic parameters)
 # ===================================================================
@@ -378,7 +309,7 @@ def _build_atlas_iron_condor(
 
                 if score > best_score:
                     best_score = score
-                    lot_size = cfg.get("lot_size", 75)
+                    lot_size = cfg.get("lot_size", 65)
                     best_candidate = TradeSuggestion(
                         strategy=StrategyName.IRON_CONDOR,
                         legs=[
@@ -490,7 +421,7 @@ def _build_atlas_hedged_strangle(
             else:
                 continue
 
-            lot_size = cfg.get("lot_size", 75)
+            lot_size = cfg.get("lot_size", 65)
             avg_delta = (abs(short_ce.ce_delta) + abs(short_pe.pe_delta)) / 2
             score = credit_pct_spot * (1 - avg_delta) * 100
 
@@ -555,7 +486,7 @@ def _build_atlas_debit_spread(
         return None
 
     min_rr = cfg.get("debit_min_risk_reward", 2.0)
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
 
     is_bullish = technicals.supertrend_direction == 1
 
@@ -680,7 +611,7 @@ def _compute_atlas_lots(
     cfg: dict,
 ) -> tuple[int, str | None]:
     """Compute lots using dynamic risk-per-trade budget."""
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
     account_value = state.initial_capital + state.net_realized_pnl
 
     # Estimate max loss per lot
@@ -1010,7 +941,7 @@ def _enrich_atlas_suggestion(
     cfg: dict,
     lots: int,
 ) -> TradeSuggestion:
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
 
     sell_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "SELL")
     buy_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY")
@@ -1102,6 +1033,9 @@ class AtlasAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
     ) -> list[TradeSuggestion]:
+        if not is_market_open():
+            return []
+
         cfg = self.config
         accepted: list[TradeSuggestion] = []
         rejected: list[TradeSuggestion] = []
@@ -1220,7 +1154,7 @@ class AtlasAlgorithm(TradingAlgorithm):
             return state
 
         if lot_size is None:
-            lot_size = self.config.get("lot_size", 75)
+            lot_size = self.config.get("lot_size", 65)
         cfg = self.config
 
         # Reset daily/weekly

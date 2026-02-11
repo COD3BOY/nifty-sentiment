@@ -14,7 +14,7 @@ from core.options_models import OptionChainData, StrikeData
 
 def bs_delta(
     S: float, K: float, T: float, r: float, sigma: float, option_type: str,
-) -> float:
+) -> float | None:
     """Black-Scholes delta for a European option.
 
     Parameters
@@ -26,9 +26,13 @@ def bs_delta(
     sigma : volatility (annual, decimal — e.g. 0.15 for 15%)
     option_type : "CE" for call, "PE" for put
 
-    Returns delta in [-1, 1].
+    Returns delta in [-1, 1], or None if inputs are invalid.
     """
+    if S <= 0 or K <= 0:
+        return None
+
     if T <= 0 or sigma <= 0:
+        # Return intrinsic delta
         if option_type == "CE":
             return 1.0 if S > K else 0.0
         return -1.0 if S < K else 0.0
@@ -63,12 +67,16 @@ def compute_chain_deltas(
         # CE delta
         if strike.ce_iv > 0:
             sigma = strike.ce_iv / 100.0  # IV stored as percentage
-            updates["ce_delta"] = round(bs_delta(S, K, T, risk_free_rate, sigma, "CE"), 4)
+            d = bs_delta(S, K, T, risk_free_rate, sigma, "CE")
+            if d is not None:
+                updates["ce_delta"] = round(d, 4)
 
         # PE delta
         if strike.pe_iv > 0:
             sigma = strike.pe_iv / 100.0
-            updates["pe_delta"] = round(bs_delta(S, K, T, risk_free_rate, sigma, "PE"), 4)
+            d = bs_delta(S, K, T, risk_free_rate, sigma, "PE")
+            if d is not None:
+                updates["pe_delta"] = round(d, 4)
 
         result.append(strike.model_copy(update=updates) if updates else strike)
 
@@ -93,10 +101,15 @@ def compute_pop(
         return round((1.0 - abs(short_strike_delta)) * 100, 1)
 
     # Debit: probability of reaching breakeven
-    if spot > 0 and breakeven > 0 and atm_iv > 0 and T > 0:
+    if T <= 0:
+        return 0.0
+    if spot > 0 and breakeven > 0 and atm_iv > 0:
         sigma = atm_iv / 100.0
+        sqrt_T = math.sqrt(T)
+        if sqrt_T < 1e-12:
+            return 0.0
         # P(S_T > breakeven) for long call, P(S_T < breakeven) for long put
-        d2 = (math.log(spot / breakeven) + (0.0 - 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+        d2 = (math.log(spot / breakeven) + (0.0 - 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
         # For a long call (breakeven > spot typically): P(S_T > breakeven)
         if breakeven > spot:
             return round(_norm_cdf(d2) * 100, 1)

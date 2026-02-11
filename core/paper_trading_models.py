@@ -53,9 +53,9 @@ class PositionLeg(BaseModel):
     @property
     def unrealized_pnl(self) -> float:
         if self.action == "BUY":
-            return (self.current_ltp - self.entry_ltp) * self.lots * self.lot_size
+            return round((self.current_ltp - self.entry_ltp) * self.lots * self.lot_size, 2)
         else:  # SELL
-            return (self.entry_ltp - self.current_ltp) * self.lots * self.lot_size
+            return round((self.entry_ltp - self.current_ltp) * self.lots * self.lot_size, 2)
 
 
 class PaperPosition(BaseModel):
@@ -83,6 +83,7 @@ class PaperPosition(BaseModel):
     trough_pnl: float = 0.0    # worst unrealized PnL during hold
     sessions_held: int = 0     # number of trading sessions position has been held
     entry_date: str | None = None  # date string when position was opened
+    last_session_date: str | None = None  # last date sessions_held was incremented
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -161,7 +162,7 @@ class PaperTradingState(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def net_realized_pnl(self) -> float:
-        return self.total_realized_pnl - self.total_execution_costs
+        return round(self.total_realized_pnl - self.total_execution_costs, 2)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

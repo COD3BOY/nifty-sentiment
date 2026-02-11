@@ -21,7 +21,7 @@ import logging
 import math
 import time as _time
 from collections import Counter
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time
 
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
@@ -52,11 +52,14 @@ from core.paper_trading_models import (
     PositionStatus,
     StrategyType,
     TradeRecord,
+    _now_ist,
+)
+from core.options_utils import (
+    get_strike_data as _get_strike_data,
+    compute_spread_width as _compute_spread_width,
 )
 
 logger = logging.getLogger(__name__)
-
-_IST = timezone(timedelta(hours=5, minutes=30))
 
 # ---------------------------------------------------------------------------
 # Credit / Debit strategy sets
@@ -93,30 +96,6 @@ _NAKED_STRATEGIES = {
     StrategyName.LONG_STRADDLE,
     StrategyName.LONG_STRANGLE,
 }
-
-
-def _now_ist() -> datetime:
-    return datetime.now(_IST)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _get_strike_data(chain: OptionChainData, strike_price: float):
-    """Look up StrikeData by strike price."""
-    for s in chain.strikes:
-        if s.strike_price == strike_price:
-            return s
-    return None
-
-
-def _compute_spread_width(legs: list[TradeLeg]) -> float:
-    """Compute spread width (distance between strikes) for spread strategies."""
-    strikes = sorted(set(leg.strike for leg in legs))
-    if len(strikes) >= 2:
-        return strikes[-1] - strikes[0]
-    return 0.0
 
 
 def _get_vix_from_analytics(analytics: OptionsAnalytics | None) -> float:
@@ -174,7 +153,7 @@ def _validate_credit_trade(
     cfg: dict,
 ) -> str | None:
     """Validate credit-specific rules. Returns rejection reason or None."""
-    lot_size = 65  # NIFTY lot size
+    lot_size = cfg.get("lot_size", 65)
 
     # --- Risk:Reward check ---
     max_rr = cfg.get("credit_max_risk_reward", 2.5)
@@ -265,7 +244,7 @@ def _validate_debit_trade(
 
     # --- Debit spreads: RR ≥ 1:1.8, POP ≥ 40% ---
     if suggestion.strategy in {StrategyName.BULL_CALL_SPREAD, StrategyName.BEAR_PUT_SPREAD}:
-        lot_size = 65
+        lot_size = cfg.get("lot_size", 65)
         buy_premium = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY")
         sell_premium = sum(leg.ltp for leg in suggestion.legs if leg.action == "SELL")
         net_debit = buy_premium - sell_premium
@@ -317,7 +296,7 @@ def _check_global_gates(
     cfg: dict,
 ) -> str | None:
     """Check all global risk limits. Returns rejection reason or None."""
-    lot_size = 65
+    lot_size = cfg.get("lot_size", 65)
 
     # --- Daily loss > 2% → full shutdown ---
     daily_loss_pct = cfg.get("daily_loss_shutdown_pct", 2.0)
@@ -405,7 +384,7 @@ def _compute_jarvis_lots(
     consecutive_losses: int = 0,
 ) -> tuple[int, str | None]:
     """Compute lots using 1% risk rule. Returns (lots, rejection_reason)."""
-    lot_size = 65
+    lot_size = cfg.get("lot_size", 65)
 
     # Estimate max loss per lot
     if suggestion.strategy in _SPREAD_STRATEGIES:
@@ -495,7 +474,7 @@ def _enrich_suggestion(
     cfg: dict,
 ) -> TradeSuggestion:
     """Fill in numeric fields on a TradeSuggestion for the output format."""
-    lot_size = 65
+    lot_size = cfg.get("lot_size", 65)
 
     sell_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "SELL")
     buy_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY")
@@ -578,6 +557,9 @@ class JarvisAlgorithm(TradingAlgorithm):
 
         Uses V1's base suggestions, then applies Jarvis filters.
         """
+        if not is_market_open():
+            return []
+
         # Start from V1's raw suggestions as candidates
         from core.trade_strategies import generate_trade_suggestions
         raw_suggestions = generate_trade_suggestions(analytics, technicals, chain)
@@ -667,7 +649,7 @@ class JarvisAlgorithm(TradingAlgorithm):
             return state
 
         if lot_size is None:
-            lot_size = 65
+            lot_size = self.config.get("lot_size", 65)
         cfg = self.config
 
         # --- Phase 1: Manage existing positions ---

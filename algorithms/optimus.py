@@ -17,8 +17,6 @@ from __future__ import annotations
 import logging
 import math
 import time as _time
-from datetime import datetime, timedelta, timezone
-
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
 from core.event_calendar import is_near_event
@@ -48,11 +46,19 @@ from core.paper_trading_models import (
     PositionStatus,
     StrategyType,
     TradeRecord,
+    _now_ist,
+)
+from core.options_utils import (
+    get_strike_data as _get_strike_data,
+    compute_spread_width as _compute_spread_width,
+    compute_bb_width_pct as _compute_bb_width_pct,
+    parse_dte as _parse_dte,
+    is_breakout as _is_breakout,
+    reset_period_tracking as _reset_period_tracking,
+    compute_expected_move as _compute_expected_move,
 )
 
 logger = logging.getLogger(__name__)
-
-_IST = timezone(timedelta(hours=5, minutes=30))
 
 # ---------------------------------------------------------------------------
 # Strategy classification sets
@@ -89,10 +95,6 @@ _SPREAD_STRATEGIES = {
 }
 
 
-def _now_ist() -> datetime:
-    return datetime.now(_IST)
-
-
 # ---------------------------------------------------------------------------
 # VIX fetching with 5-minute cache
 # ---------------------------------------------------------------------------
@@ -124,34 +126,6 @@ def _fetch_india_vix(cfg: dict) -> float | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _compute_bb_width_pct(technicals: TechnicalIndicators) -> float:
-    """Bollinger Band width as percentage of middle band."""
-    if technicals.bb_middle > 0:
-        return ((technicals.bb_upper - technicals.bb_lower) / technicals.bb_middle) * 100
-    return 0.0
-
-
-def _compute_expected_move(spot: float, atm_iv: float, dte: int) -> float:
-    """Expected move = spot * (IV/100) * sqrt(DTE/365)."""
-    if spot <= 0 or atm_iv <= 0 or dte <= 0:
-        return 0.0
-    return spot * (atm_iv / 100.0) * math.sqrt(dte / 365.0)
-
-
-def _parse_dte(expiry_str: str) -> int:
-    """Parse chain.expiry (e.g. '30-Jan-2025') to calendar days from today."""
-    try:
-        expiry_date = datetime.strptime(expiry_str, "%d-%b-%Y").date()
-        today = _now_ist().date()
-        return max(0, (expiry_date - today).days)
-    except (ValueError, TypeError):
-        return 0
-
-
 def _is_range_bound(technicals: TechnicalIndicators) -> bool:
     """Spot within Bollinger Bands and near VWAP."""
     if technicals.bb_upper <= 0 or technicals.bb_lower <= 0:
@@ -169,58 +143,6 @@ def _is_mean_reverting(technicals: TechnicalIndicators) -> bool:
     bb_width = _compute_bb_width_pct(technicals)
     bb_contracting = 0 < bb_width < 1.5
     return rsi_neutral and bb_contracting
-
-
-def _is_breakout(technicals: TechnicalIndicators) -> bool:
-    """Spot outside BB + supertrend confirms direction."""
-    if technicals.bb_upper <= 0:
-        return False
-    above_bb = technicals.spot > technicals.bb_upper
-    below_bb = technicals.spot < technicals.bb_lower
-    if above_bb and technicals.supertrend_direction == 1:
-        return True
-    if below_bb and technicals.supertrend_direction == -1:
-        return True
-    return False
-
-
-def _get_strike_data(chain: OptionChainData, strike_price: float):
-    """Look up StrikeData by strike price."""
-    for s in chain.strikes:
-        if s.strike_price == strike_price:
-            return s
-    return None
-
-
-def _compute_spread_width(legs: list[TradeLeg]) -> float:
-    """Compute spread width (distance between strikes) for spread strategies."""
-    strikes = sorted(set(leg.strike for leg in legs))
-    if len(strikes) >= 2:
-        return strikes[-1] - strikes[0]
-    return 0.0
-
-
-def _reset_period_tracking(state: PaperTradingState, cfg: dict) -> PaperTradingState:
-    """Reset daily/weekly capital tracking when period changes."""
-    now = _now_ist()
-    today_str = now.strftime("%Y-%m-%d")
-    current_capital = state.initial_capital + state.net_realized_pnl
-    updates: dict = {}
-
-    # Daily reset
-    if state.session_date != today_str:
-        updates["session_date"] = today_str
-        updates["daily_start_capital"] = current_capital
-
-    # Weekly reset (Monday = 0)
-    current_week = now.strftime("%Y-W%W")
-    if state.week_start_date != current_week:
-        updates["week_start_date"] = current_week
-        updates["weekly_start_capital"] = current_capital
-
-    if updates:
-        return state.model_copy(update=updates)
-    return state
 
 
 # ===================================================================
@@ -375,7 +297,7 @@ def _build_iron_condor(
 
                 if score > best_score:
                     best_score = score
-                    lot_size = cfg.get("lot_size", 75)
+                    lot_size = cfg.get("lot_size", 65)
                     best_candidate = TradeSuggestion(
                         strategy=StrategyName.IRON_CONDOR,
                         legs=[
@@ -496,7 +418,7 @@ def _build_hedged_strangle(
             else:
                 continue
 
-            lot_size = cfg.get("lot_size", 75)
+            lot_size = cfg.get("lot_size", 65)
             avg_delta = (abs(short_ce.ce_delta) + abs(short_pe.pe_delta)) / 2
             score = credit_pct_spot * (1 - avg_delta) * 100
 
@@ -566,7 +488,7 @@ def _build_debit_spread(
 
     min_rr = cfg.get("debit_min_risk_reward", 2.0)
     max_risk_pct = cfg.get("debit_max_risk_pct", 0.4)
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
 
     # Determine direction from supertrend
     is_bullish = technicals.supertrend_direction == 1
@@ -702,7 +624,7 @@ def _compute_optimus_lots(
     is_half_size: bool = False,
 ) -> tuple[int, str | None]:
     """Compute lots using 0.5% risk rule. Returns (lots, rejection_reason)."""
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
     account_value = state.initial_capital + state.net_realized_pnl
 
     # Estimate max loss per lot
@@ -770,7 +692,7 @@ def _check_optimus_gates(
 ) -> str | None:
     """Check all global hard risk limits. Returns rejection reason or None."""
     account_value = state.initial_capital + state.net_realized_pnl
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
 
     # 1.25% daily loss -> hard shutdown
     daily_loss_pct = cfg.get("daily_loss_shutdown_pct", 1.25)
@@ -1066,7 +988,7 @@ def _enrich_optimus_suggestion(
     lots: int,
 ) -> TradeSuggestion:
     """Populate numeric fields and add regime justification to reasoning."""
-    lot_size = cfg.get("lot_size", 75)
+    lot_size = cfg.get("lot_size", 65)
 
     sell_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "SELL")
     buy_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY")
@@ -1156,6 +1078,9 @@ class OptimusAlgorithm(TradingAlgorithm):
         analytics: OptionsAnalytics,
     ) -> list[TradeSuggestion]:
         """Generate hedge trade candidates independently (no V1 dependency)."""
+        if not is_market_open():
+            return []
+
         cfg = self.config
         accepted: list[TradeSuggestion] = []
         rejected: list[TradeSuggestion] = []
@@ -1263,7 +1188,7 @@ class OptimusAlgorithm(TradingAlgorithm):
             return state
 
         if lot_size is None:
-            lot_size = self.config.get("lot_size", 75)
+            lot_size = self.config.get("lot_size", 65)
         cfg = self.config
 
         # Reset daily/weekly period tracking

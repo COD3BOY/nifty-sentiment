@@ -9,6 +9,10 @@ from pathlib import Path
 # Ensure project root is on sys.path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Set up structured logging before any other imports
+from core.logging_config import setup as setup_logging
+setup_logging()
+
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components

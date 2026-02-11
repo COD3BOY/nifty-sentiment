@@ -667,6 +667,20 @@ def evaluate_and_manage(
         if chain:
             position = update_position_ltp(position, chain)
 
+        # Increment sessions_held when position spans a new trading day
+        today_str = _now_ist().strftime("%Y-%m-%d")
+        if (
+            position.entry_date
+            and position.last_session_date != today_str
+            and position.entry_date != today_str
+        ):
+            from core.market_hours import is_trading_day
+            if is_trading_day():
+                position = position.model_copy(update={
+                    "sessions_held": position.sessions_held + 1,
+                    "last_session_date": today_str,
+                })
+
         # Track peak/trough PnL
         pnl = position.total_unrealized_pnl
         position = position.model_copy(update={
@@ -739,14 +753,16 @@ def evaluate_and_manage(
         logger.info("Entry cutoff: %s IST >= %s — blocking new trades", now.strftime('%H:%M'), entry_cutoff_time)
         return state
 
-    # Daily loss circuit breaker
+    # Daily loss circuit breaker (includes unrealized PnL)
     daily_loss_limit_pct = cfg.get("daily_loss_limit_pct", 3.0)
-    session_pnl = (state.initial_capital + state.net_realized_pnl) - state.session_start_capital
+    session_realized_pnl = (state.initial_capital + state.net_realized_pnl) - state.session_start_capital
+    total_session_pnl = session_realized_pnl + state.unrealized_pnl
     daily_loss_limit = state.session_start_capital * (daily_loss_limit_pct / 100)
-    if session_pnl <= -daily_loss_limit:
+    if total_session_pnl <= -daily_loss_limit:
         logger.warning(
-            "CIRCUIT BREAKER: Daily loss %.2f exceeds %.1f%% limit (%.2f). Blocking new trades.",
-            abs(session_pnl), daily_loss_limit_pct, daily_loss_limit,
+            "CIRCUIT BREAKER: Daily loss %.2f (realized=%.2f, unrealized=%.2f) exceeds %.1f%% limit (%.2f). Blocking new trades.",
+            abs(total_session_pnl), session_realized_pnl, state.unrealized_pnl,
+            daily_loss_limit_pct, daily_loss_limit,
         )
         return state
 
@@ -844,9 +860,27 @@ def _state_file(algo_name: str = "sentinel") -> Path:
 
 
 def save_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
-    """Persist paper trading state to disk (atomic write)."""
+    """Persist paper trading state to disk (atomic write with backup)."""
+    import logging
+
+    _logger = logging.getLogger(__name__)
     path = _state_file(algo_name)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Rotate backups: keep last 3
+    if path.exists():
+        try:
+            for i in range(2, 0, -1):
+                older = path.with_suffix(f".bak{i}")
+                newer = path.with_suffix(f".bak{i - 1}" if i > 1 else ".bak")
+                if newer.exists():
+                    newer.replace(older)
+            path.with_suffix(".bak").parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(path, path.with_suffix(".bak"))
+        except Exception as e:
+            _logger.warning("Failed to create state backup: %s", e)
+
     tmp = path.with_suffix(".tmp")
     tmp.write_text(state.model_dump_json(indent=2))
     tmp.replace(path)  # atomic on POSIX

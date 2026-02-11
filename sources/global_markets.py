@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime
 
+import pandas as pd
 import yfinance as yf
 
 from core.config import get_source_config
@@ -47,6 +48,13 @@ class GlobalMarketsSource(DataSource):
 
                 prev_close = hist["Close"].iloc[-2]
                 current = hist["Close"].iloc[-1]
+
+                if pd.isna(current) or pd.isna(prev_close) or prev_close == 0:
+                    logger.warning("NaN/zero price for %s, skipping", ticker)
+                    continue
+
+                current = float(current)
+                prev_close = float(prev_close)
                 change_pct = ((current - prev_close) / prev_close) * 100
 
                 snap = MarketSnapshot(

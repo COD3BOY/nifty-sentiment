@@ -127,7 +127,22 @@ class SentimentDatabase:
         config = load_config()
         db_path = Path(__file__).resolve().parent.parent / config["database"]["path"]
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.engine = create_engine(f"sqlite:///{db_path}", echo=False)
+        self.engine = create_engine(
+            f"sqlite:///{db_path}",
+            echo=False,
+            connect_args={"timeout": 30},
+        )
+
+        # Enable WAL mode and busy timeout for better concurrency
+        from sqlalchemy import event
+
+        @event.listens_for(self.engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
 

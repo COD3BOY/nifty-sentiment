@@ -71,9 +71,20 @@ def _fetch_raw_data(start_date: str = "2022-01-01") -> pd.DataFrame | None:
         })
         df.index = pd.to_datetime(df.index)
 
-        # Forward-fill VIX gaps (VIX may have fewer trading days)
-        df["vix"] = df["vix"].ffill()
+        # Forward-fill VIX gaps (VIX may have fewer trading days) — max 5 business days
+        df["vix"] = df["vix"].ffill(limit=5)
         df = df.dropna(subset=["close"])
+
+        # Check NIFTY/VIX date overlap
+        vix_valid = df["vix"].notna().sum()
+        total = len(df)
+        if total > 0:
+            overlap_pct = vix_valid / total * 100
+            if overlap_pct < 80:
+                logger.warning(
+                    "VOL_DIST: VIX coverage only %.1f%% (%d/%d rows) — VRP may be unreliable",
+                    overlap_pct, vix_valid, total,
+                )
 
         logger.info("VOL_DIST: Fetched %d rows (NIFTY: %s to %s)",
                      len(df), df.index[0].date(), df.index[-1].date())
@@ -115,12 +126,18 @@ def _compute_percentile_ranks(df: pd.DataFrame, lookback: int = 504) -> pd.DataF
         for i in range(len(values)):
             start = max(0, i - lookback + 1)
             window = values[start:i + 1]
-            valid = window[~np.isnan(window)]
+            # Filter out NaN and inf
+            valid = window[np.isfinite(window)]
             if len(valid) < 60:
+                if i == len(values) - 1 and len(valid) > 0:
+                    logger.warning(
+                        "VOL_DIST: only %d valid values for %s (need 60), using 0.5 default",
+                        len(valid), col,
+                    )
                 ranks.append(np.nan)
             else:
                 current = values[i]
-                if np.isnan(current):
+                if not np.isfinite(current):
                     ranks.append(np.nan)
                 else:
                     count_below = np.sum(valid < current)
@@ -198,7 +215,19 @@ def get_today_vol_snapshot(spot: float, dte: int = 5) -> VolSnapshot | None:
         return None
 
     row = last.iloc[-1]
-    vix_val = float(row["vix"]) if not np.isnan(row["vix"]) else 0.0
+
+    # Check data freshness — reject if older than 2 business days
+    last_date = pd.Timestamp(last.index[-1])
+    today = pd.Timestamp.now().normalize()
+    bday_gap = len(pd.bdate_range(last_date, today)) - 1
+    if bday_gap > 2:
+        logger.warning(
+            "VOL_DIST: last valid row is %d business days old (%s), returning None",
+            bday_gap, last_date.date(),
+        )
+        return None
+
+    vix_val = float(row["vix"]) if np.isfinite(row["vix"]) else 0.0
 
     # Expected move
     em = 0.0

@@ -83,13 +83,17 @@ class SentimentEngine:
             timeout = src_cfg.get("timeout", default_timeout)
             tasks.append(self._fetch_one(source, timeout))
 
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Collect successful results
         scores: list[SentimentScore] = []
         failed = 0
-        for result in results:
-            if result is not None and result.confidence > 0:
+        for i, result in enumerate(results):
+            if isinstance(result, BaseException):
+                source_name = self._sources[i].name if i < len(self._sources) else "unknown"
+                logger.error(f"Source {source_name} raised exception: {result}")
+                failed += 1
+            elif result is not None and result.confidence > 0:
                 scores.append(result)
             else:
                 failed += 1
