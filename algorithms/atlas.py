@@ -1,15 +1,14 @@
-"""V3 Hedge algorithm — Capital preservation options trading.
+"""V4 Atlas algorithm — Distribution-based dynamic thresholds.
 
-Conservative credit strategies (iron condors, hedged strangles) with strict
-drawdown limits. Builds own trade candidates by scanning the option chain
-for precise delta/width/credit targets — independent of V1 suggestions.
+Every threshold is a function of NIFTY's own historical volatility distribution.
+Replaces fixed constants with percentile-based gates derived from realized vol,
+vol-of-vol, and the volatility risk premium.
 
-Key constraints:
-  - Max 8% annual drawdown, 1.25% daily, 2% weekly
-  - 0.5% risk per trade, 3% max portfolio risk
-  - No naked (unlimited-risk) positions
-  - Real India VIX via yfinance for regime detection
-  - Active delta monitoring (0.25 warn, 0.30 exit)
+Key features:
+  - 9 dynamic parameter functions of (pRV, pVoV, pVRP)
+  - Regime classifier: sell_premium / buy_premium / stand_down
+  - All regime/parameter decisions driven by vol distribution percentiles
+  - Fallback to neutral snapshot (percentiles = 0.5) when data unavailable
 """
 
 from __future__ import annotations
@@ -48,33 +47,34 @@ from core.paper_trading_models import (
     StrategyType,
     TradeRecord,
 )
+from core.vol_distribution import VolSnapshot, get_today_vol_snapshot
 
 logger = logging.getLogger(__name__)
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 # ---------------------------------------------------------------------------
-# Strategy classification sets
+# Strategy classification sets (same as optimus.py)
 # ---------------------------------------------------------------------------
 
-_HEDGE_CREDIT = {
+_ATLAS_CREDIT = {
     StrategyName.IRON_CONDOR,
     StrategyName.SHORT_STRANGLE,
     StrategyName.BULL_PUT_SPREAD,
     StrategyName.BEAR_CALL_SPREAD,
 }
 
-_HEDGE_DEBIT = {
+_ATLAS_DEBIT = {
     StrategyName.BULL_CALL_SPREAD,
     StrategyName.BEAR_PUT_SPREAD,
 }
 
-_HEDGE_PRIMARY = {
+_ATLAS_PRIMARY = {
     StrategyName.IRON_CONDOR,
 }
 
-_HEDGE_SECONDARY = {
-    StrategyName.SHORT_STRANGLE,  # hedged strangle (with wings)
+_ATLAS_SECONDARY = {
+    StrategyName.SHORT_STRANGLE,
     StrategyName.BULL_CALL_SPREAD,
     StrategyName.BEAR_PUT_SPREAD,
 }
@@ -93,56 +93,136 @@ def _now_ist() -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# VIX fetching with 5-minute cache
+# Neutral fallback snapshot
 # ---------------------------------------------------------------------------
 
-_vix_cache: dict[str, tuple[float, float]] = {}  # ticker -> (value, timestamp)
-_VIX_CACHE_TTL = 300  # 5 minutes
-
-
-def _fetch_india_vix(cfg: dict) -> float | None:
-    """Fetch India VIX via yfinance with 5-minute cache. Returns None on failure."""
-    ticker = cfg.get("vix_ticker", "^INDIAVIX")
-    now = _time.time()
-
-    cached = _vix_cache.get(ticker)
-    if cached and (now - cached[1]) < _VIX_CACHE_TTL:
-        return cached[0]
-
-    try:
-        import yfinance as yf
-        vix_data = yf.Ticker(ticker)
-        hist = vix_data.history(period="1d")
-        if hist.empty:
-            return None
-        vix_val = float(hist["Close"].iloc[-1])
-        _vix_cache[ticker] = (vix_val, now)
-        return vix_val
-    except Exception as e:
-        logger.warning("HEDGE: Failed to fetch VIX (%s): %s", ticker, e)
-        return None
+def _neutral_snapshot() -> VolSnapshot:
+    """Return a neutral snapshot with all percentiles at 0.5."""
+    return VolSnapshot(
+        rv_5=15.0, rv_10=15.0, rv_20=15.0,
+        vov_20=1.0, vix=15.0, vrp=0.0,
+        p_rv=0.5, p_vov=0.5, p_vrp=0.5,
+        em=0.0, date=_now_ist().strftime("%Y-%m-%d"),
+    )
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 9 Dynamic Parameter Functions
 # ---------------------------------------------------------------------------
 
-def _compute_bb_width_pct(technicals: TechnicalIndicators) -> float:
-    """Bollinger Band width as percentage of middle band."""
-    if technicals.bb_middle > 0:
-        return ((technicals.bb_upper - technicals.bb_lower) / technicals.bb_middle) * 100
-    return 0.0
+def _clamp(val: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, val))
 
 
-def _compute_expected_move(spot: float, atm_iv: float, dte: int) -> float:
-    """Expected move = spot * (IV/100) * sqrt(DTE/365)."""
-    if spot <= 0 or atm_iv <= 0 or dte <= 0:
+def _dynamic_strike_delta(p_rv: float, cfg: dict) -> float:
+    """Short strike delta target: lower delta when vol is high."""
+    base = cfg.get("strike_delta_base", 0.20)
+    coeff = cfg.get("strike_delta_coeff", 0.08)
+    return _clamp(base - coeff * p_rv, 0.10, 0.20)
+
+
+def _dynamic_min_credit_ratio(p_vrp: float, cfg: dict) -> float:
+    """Min credit/width gate: higher when VRP is rich."""
+    base = cfg.get("credit_ratio_base", 0.22)
+    coeff = cfg.get("credit_ratio_coeff", 0.16)
+    return _clamp(base + coeff * p_vrp, 0.22, 0.40)
+
+
+def _dynamic_sl_multiple(p_vov: float, cfg: dict) -> float:
+    """Stop loss multiplier: wider when vol-of-vol is high."""
+    base = cfg.get("sl_multiple_base", 1.6)
+    coeff = cfg.get("sl_multiple_coeff", 0.8)
+    return _clamp(base + coeff * p_vov, 1.6, 2.5)
+
+
+def _dynamic_delta_exit(p_rv: float, cfg: dict) -> float:
+    """Emergency delta exit threshold: tighter when vol is high."""
+    base = cfg.get("delta_exit_base", 0.22)
+    coeff = cfg.get("delta_exit_coeff", 0.10)
+    return _clamp(base + coeff * p_rv, 0.22, 0.33)
+
+
+def _dynamic_take_profit(p_rv: float, cfg: dict) -> float:
+    """Profit capture %: take profits faster when vol is low."""
+    base = cfg.get("take_profit_base", 0.45)
+    coeff = cfg.get("take_profit_coeff", 0.20)
+    return _clamp(base + coeff * (1 - p_rv), 0.45, 0.70)
+
+
+def _dynamic_breakeven_mult(p_vov: float, cfg: dict) -> float:
+    """Expected move coverage requirement: wider when VoV is high."""
+    base = cfg.get("breakeven_mult_base", 1.15)
+    coeff = cfg.get("breakeven_mult_coeff", 0.30)
+    return _clamp(base + coeff * p_vov, 1.15, 1.50)
+
+
+def _dynamic_risk_per_trade(p_rv: float, p_vov: float, cfg: dict) -> float:
+    """Per-trade risk budget as % of account. Shrinks in high vol."""
+    base_pct = cfg.get("risk_per_trade_base_pct", 0.50)
+    a = cfg.get("risk_per_trade_rv_coeff", 0.5)
+    b = cfg.get("risk_per_trade_vov_coeff", 0.5)
+    factor = _clamp((1 - a * p_rv) * (1 - b * p_vov), 0.25, 1.0)
+    return _clamp(base_pct * factor, 0.125, 0.50)
+
+
+def _dynamic_max_portfolio_risk(p_vov: float, cfg: dict) -> float:
+    """Portfolio risk cap as %. Shrinks when VoV is high."""
+    base_pct = cfg.get("max_portfolio_risk_base_pct", 3.0)
+    coeff = cfg.get("max_portfolio_risk_coeff", 0.5)
+    return _clamp(base_pct * (1 - coeff * p_vov), 1.5, 3.0)
+
+
+def _classify_regime(vol: VolSnapshot, cfg: dict) -> str:
+    """Classify volatility regime.
+
+    Returns: "sell_premium", "buy_premium", or "stand_down"
+    """
+    # Priority: stand_down (safety first)
+    if vol.p_vov >= cfg.get("standdown_vov_min", 0.85):
+        return "stand_down"
+    if vol.p_rv >= cfg.get("standdown_rv_min", 0.90):
+        return "stand_down"
+
+    # Sell premium: VRP rich and vol stable
+    sell_vrp_min = cfg.get("regime_sell_vrp_min", 0.55)
+    sell_vov_max = cfg.get("regime_sell_vov_max", 0.70)
+    if vol.p_vrp >= sell_vrp_min and vol.p_vov <= sell_vov_max:
+        return "sell_premium"
+
+    # Buy premium: VRP cheap (options underpriced)
+    if vol.p_vrp <= 0.30:
+        return "buy_premium"
+
+    # Ambiguous
+    return "stand_down"
+
+
+def _get_all_dynamic_params(vol: VolSnapshot, cfg: dict) -> dict:
+    """Compute all 9 dynamic parameters and return as dict for logging/display."""
+    return {
+        "strike_delta": round(_dynamic_strike_delta(vol.p_rv, cfg), 4),
+        "min_credit_ratio": round(_dynamic_min_credit_ratio(vol.p_vrp, cfg), 4),
+        "sl_multiple": round(_dynamic_sl_multiple(vol.p_vov, cfg), 2),
+        "delta_exit": round(_dynamic_delta_exit(vol.p_rv, cfg), 4),
+        "take_profit": round(_dynamic_take_profit(vol.p_rv, cfg), 4),
+        "breakeven_mult": round(_dynamic_breakeven_mult(vol.p_vov, cfg), 3),
+        "risk_per_trade_pct": round(_dynamic_risk_per_trade(vol.p_rv, vol.p_vov, cfg), 4),
+        "max_portfolio_risk_pct": round(_dynamic_max_portfolio_risk(vol.p_vov, cfg), 2),
+        "regime": _classify_regime(vol, cfg),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Helpers (shared with hedge.py pattern)
+# ---------------------------------------------------------------------------
+
+def _compute_expected_move(spot: float, vix: float, dte: int) -> float:
+    if spot <= 0 or vix <= 0 or dte <= 0:
         return 0.0
-    return spot * (atm_iv / 100.0) * math.sqrt(dte / 365.0)
+    return spot * (vix / 100.0) * math.sqrt(dte / 365.0)
 
 
 def _parse_dte(expiry_str: str) -> int:
-    """Parse chain.expiry (e.g. '30-Jan-2025') to calendar days from today."""
     try:
         expiry_date = datetime.strptime(expiry_str, "%d-%b-%Y").date()
         today = _now_ist().date()
@@ -151,27 +231,27 @@ def _parse_dte(expiry_str: str) -> int:
         return 0
 
 
-def _is_range_bound(technicals: TechnicalIndicators) -> bool:
-    """Spot within Bollinger Bands and near VWAP."""
-    if technicals.bb_upper <= 0 or technicals.bb_lower <= 0:
-        return False
-    in_bb = technicals.bb_lower <= technicals.spot <= technicals.bb_upper
-    near_vwap = True
-    if technicals.vwap > 0:
-        near_vwap = abs(technicals.spot - technicals.vwap) / technicals.vwap * 100 < 0.5
-    return in_bb and near_vwap
+def _get_strike_data(chain: OptionChainData, strike_price: float):
+    for s in chain.strikes:
+        if s.strike_price == strike_price:
+            return s
+    return None
 
 
-def _is_mean_reverting(technicals: TechnicalIndicators) -> bool:
-    """RSI neutral (40-60) + BB contracting (width < 1.5%)."""
-    rsi_neutral = 40 <= technicals.rsi <= 60
-    bb_width = _compute_bb_width_pct(technicals)
-    bb_contracting = 0 < bb_width < 1.5
-    return rsi_neutral and bb_contracting
+def _compute_spread_width(legs: list[TradeLeg]) -> float:
+    strikes = sorted(set(leg.strike for leg in legs))
+    if len(strikes) >= 2:
+        return strikes[-1] - strikes[0]
+    return 0.0
+
+
+def _compute_bb_width_pct(technicals: TechnicalIndicators) -> float:
+    if technicals.bb_middle > 0:
+        return ((technicals.bb_upper - technicals.bb_lower) / technicals.bb_middle) * 100
+    return 0.0
 
 
 def _is_breakout(technicals: TechnicalIndicators) -> bool:
-    """Spot outside BB + supertrend confirms direction."""
     if technicals.bb_upper <= 0:
         return False
     above_bb = technicals.spot > technicals.bb_upper
@@ -183,35 +263,16 @@ def _is_breakout(technicals: TechnicalIndicators) -> bool:
     return False
 
 
-def _get_strike_data(chain: OptionChainData, strike_price: float):
-    """Look up StrikeData by strike price."""
-    for s in chain.strikes:
-        if s.strike_price == strike_price:
-            return s
-    return None
-
-
-def _compute_spread_width(legs: list[TradeLeg]) -> float:
-    """Compute spread width (distance between strikes) for spread strategies."""
-    strikes = sorted(set(leg.strike for leg in legs))
-    if len(strikes) >= 2:
-        return strikes[-1] - strikes[0]
-    return 0.0
-
-
 def _reset_period_tracking(state: PaperTradingState, cfg: dict) -> PaperTradingState:
-    """Reset daily/weekly capital tracking when period changes."""
     now = _now_ist()
     today_str = now.strftime("%Y-%m-%d")
     current_capital = state.initial_capital + state.net_realized_pnl
     updates: dict = {}
 
-    # Daily reset
     if state.session_date != today_str:
         updates["session_date"] = today_str
         updates["daily_start_capital"] = current_capital
 
-    # Weekly reset (Monday = 0)
     current_week = now.strftime("%Y-W%W")
     if state.week_start_date != current_week:
         updates["week_start_date"] = current_week
@@ -223,73 +284,17 @@ def _reset_period_tracking(state: PaperTradingState, cfg: dict) -> PaperTradingS
 
 
 # ===================================================================
-# Section 3A: Credit Regime Filter
+# Trade Construction — Iron Condor (dynamic parameters)
 # ===================================================================
 
-def _check_credit_regime(
-    analytics: OptionsAnalytics,
-    technicals: TechnicalIndicators,
-    vix: float | None,
-    cfg: dict,
-) -> tuple[str | None, bool]:
-    """Check if credit regime conditions are met.
-
-    Returns (rejection_reason | None, is_half_size).
-    """
-    is_half_size = False
-
-    # IV percentile check
-    min_iv_pct = cfg.get("credit_min_iv_percentile", 55.0)
-    if analytics.iv_percentile < min_iv_pct:
-        return f"IV percentile {analytics.iv_percentile:.1f} < {min_iv_pct} (need elevated IV for credit)", False
-
-    # VIX band check
-    if vix is not None:
-        vix_no_credit = cfg.get("vix_no_credit_below", 14.0)
-        vix_max = cfg.get("vix_credit_max", 24.0)
-        vix_half = cfg.get("vix_half_size_above", 28.0)
-
-        if vix < vix_no_credit:
-            return f"VIX {vix:.1f} < {vix_no_credit} — IV too low for credit strategies", False
-
-        if vix > vix_half:
-            is_half_size = True
-            logger.info("HEDGE: VIX %.1f > %.1f — half-size mode", vix, vix_half)
-
-        if vix > vix_max and not is_half_size:
-            # Between vix_max and vix_half — still allow but log warning
-            logger.info("HEDGE: VIX %.1f > %.1f — elevated, proceed with caution", vix, vix_max)
-
-    # BB width check — market should be range-bound
-    max_bb_width = cfg.get("credit_max_bb_width_pct", 3.0)
-    bb_width = _compute_bb_width_pct(technicals)
-    if bb_width > max_bb_width:
-        return f"BB width {bb_width:.1f}% > {max_bb_width}% — market too volatile for credit", False
-
-    # Macro event check
-    macro_override = cfg.get("macro_event_override", False)
-    if not macro_override:
-        near_event, event_label = is_near_event(days_ahead=1)
-        if near_event:
-            return f"Macro event within 24h: {event_label} — blocking credit strategies", False
-
-    return None, is_half_size
-
-
-# ===================================================================
-# Section 3B: Iron Condor Construction
-# ===================================================================
-
-def _build_iron_condor(
+def _build_atlas_iron_condor(
     chain: OptionChainData,
     analytics: OptionsAnalytics,
     technicals: TechnicalIndicators,
+    vol: VolSnapshot,
     cfg: dict,
 ) -> TradeSuggestion | None:
-    """Build an iron condor by scanning the chain for optimal strikes.
-
-    Scans for short CE/PE strikes with delta 0.12-0.18, tries widths [50, 100].
-    """
+    """Build iron condor using dynamic delta/credit/breakeven targets."""
     spot = chain.underlying_value
     if spot <= 0:
         return None
@@ -298,19 +303,21 @@ def _build_iron_condor(
     if dte <= 0:
         return None
 
-    delta_min = cfg.get("ic_short_delta_min", 0.12)
-    delta_max = cfg.get("ic_short_delta_max", 0.18)
-    widths = cfg.get("ic_widths", [50, 100])
-    min_credit_pct_width = cfg.get("ic_min_credit_pct_width", 35.0)
-    max_rr = cfg.get("ic_max_risk_reward", 2.0)
-    be_mult = cfg.get("ic_breakeven_expected_move_mult", 1.3)
+    # Dynamic parameters
+    delta_target = _dynamic_strike_delta(vol.p_rv, cfg)
+    delta_min = max(0.08, delta_target - 0.04)
+    delta_max = delta_target + 0.04
+    min_credit_ratio = _dynamic_min_credit_ratio(vol.p_vrp, cfg)
+    be_mult = _dynamic_breakeven_mult(vol.p_vov, cfg)
 
-    expected_move = _compute_expected_move(spot, analytics.atm_iv, dte)
+    widths = cfg.get("ic_widths", [50, 100])
+    max_rr = cfg.get("ic_max_risk_reward", 2.0)
+
+    expected_move = _compute_expected_move(spot, vol.vix, dte)
 
     best_candidate: TradeSuggestion | None = None
     best_score = 0.0
 
-    # Find CE short strikes with delta in range
     ce_candidates = []
     pe_candidates = []
     for sd in chain.strikes:
@@ -337,7 +344,6 @@ def _build_iron_condor(
                 if long_ce_sd.ce_ltp <= 0 or long_pe_sd.pe_ltp <= 0:
                     continue
 
-                # Net credit
                 credit = (
                     short_ce.ce_ltp + short_pe.pe_ltp
                     - long_ce_sd.ce_ltp - long_pe_sd.pe_ltp
@@ -345,12 +351,10 @@ def _build_iron_condor(
                 if credit <= 0:
                     continue
 
-                # Credit as % of width
-                credit_pct = (credit / width) * 100
-                if credit_pct < min_credit_pct_width:
+                credit_pct = credit / width
+                if credit_pct < min_credit_ratio:
                     continue
 
-                # Risk:Reward
                 max_loss_per_unit = width - credit
                 if credit > 0:
                     rr = max_loss_per_unit / credit
@@ -359,7 +363,7 @@ def _build_iron_condor(
                 if rr > max_rr:
                     continue
 
-                # Breakeven check: breakevens should be >= 1.3x expected move from spot
+                # Breakeven check with dynamic multiplier
                 upper_be = short_ce.strike_price + credit
                 lower_be = short_pe.strike_price - credit
                 if expected_move > 0:
@@ -368,9 +372,8 @@ def _build_iron_condor(
                     if upper_dist < be_mult * expected_move or lower_dist < be_mult * expected_move:
                         continue
 
-                # Score: higher credit % + lower delta = better
                 avg_delta = (abs(short_ce.ce_delta) + abs(short_pe.pe_delta)) / 2
-                score = credit_pct * (1 - avg_delta) * 100
+                score = credit_pct * (1 - avg_delta) * 10000
 
                 if score > best_score:
                     best_score = score
@@ -390,23 +393,24 @@ def _build_iron_condor(
                         direction_bias="Neutral",
                         confidence="High",
                         score=round(score, 1),
-                        entry_timing="Enter now — range-bound market with elevated IV",
+                        entry_timing="Enter now — vol regime favors premium selling",
                         technicals_to_check=[
-                            f"RSI: {technicals.rsi:.1f}",
-                            f"BB width: {_compute_bb_width_pct(technicals):.2f}%",
-                            f"IV percentile: {analytics.iv_percentile:.1f}",
+                            f"pRV: {vol.p_rv:.2f}, pVoV: {vol.p_vov:.2f}, pVRP: {vol.p_vrp:.2f}",
+                            f"Dynamic delta target: {delta_target:.3f}",
+                            f"Dynamic credit ratio: {min_credit_ratio:.3f}",
                         ],
                         expected_outcome=f"Profit if NIFTY stays between {int(lower_be)}-{int(upper_be)}",
                         max_profit=f"₹{credit * lot_size:,.0f} per lot",
                         max_loss=f"₹{max_loss_per_unit * lot_size:,.0f} per lot",
-                        stop_loss=f"Exit at {cfg.get('credit_sl_multiplier', 1.8):.1f}x credit or short delta > {cfg.get('delta_exit_threshold', 0.30)}",
-                        position_size="Per hedge sizing rules",
+                        stop_loss=f"Dynamic SL: {_dynamic_sl_multiple(vol.p_vov, cfg):.1f}x credit | delta > {_dynamic_delta_exit(vol.p_rv, cfg):.3f}",
+                        position_size="Per Atlas dynamic sizing",
                         reasoning=[
                             f"Iron condor: SELL {int(short_pe.strike_price)} PE / {int(short_ce.strike_price)} CE, width {width}",
-                            f"Net credit: ₹{credit:.1f} ({credit_pct:.1f}% of width)",
+                            f"Net credit: ₹{credit:.1f} ({credit_pct * 100:.1f}% of width)",
                             f"RR: 1:{rr:.1f}, breakevens: {int(lower_be)}-{int(upper_be)}",
                             f"Short deltas: CE={abs(short_ce.ce_delta):.3f}, PE={abs(short_pe.pe_delta):.3f}",
-                            f"Expected move: ±{expected_move:.0f} pts ({dte} DTE)",
+                            f"Vol regime: pRV={vol.p_rv:.2f} pVoV={vol.p_vov:.2f} pVRP={vol.p_vrp:.2f}",
+                            f"Expected move: ±{expected_move:.0f} pts ({dte} DTE), BE mult: {be_mult:.2f}x",
                         ],
                     )
 
@@ -414,41 +418,35 @@ def _build_iron_condor(
 
 
 # ===================================================================
-# Section 4: Hedged Strangle Construction
+# Hedged Strangle Construction (dynamic parameters)
 # ===================================================================
 
-def _build_hedged_strangle(
+def _build_atlas_hedged_strangle(
     chain: OptionChainData,
     analytics: OptionsAnalytics,
     technicals: TechnicalIndicators,
+    vol: VolSnapshot,
     cfg: dict,
 ) -> TradeSuggestion | None:
-    """Build a hedged strangle (short strangle + protective wings).
-
-    Extra regime requirements: IV percentile >= 65, VIX 16-22, mean-reversion.
-    """
+    """Build hedged strangle using vol distribution regime check."""
     spot = chain.underlying_value
     if spot <= 0:
         return None
 
-    # Extra IV percentile requirement for strangles
-    min_iv_pct = cfg.get("strangle_min_iv_percentile", 65.0)
-    if analytics.iv_percentile < min_iv_pct:
+    # Regime check: require rich VRP instead of fixed IV percentile
+    if vol.p_vrp < 0.60:
         return None
 
-    # Mean-reversion check
-    if not _is_mean_reverting(technicals):
-        return None
-
-    delta_min = cfg.get("strangle_delta_min", 0.10)
-    delta_max = cfg.get("strangle_delta_max", 0.15)
+    # Dynamic delta range
+    delta_target = _dynamic_strike_delta(vol.p_rv, cfg)
+    delta_min = max(0.06, delta_target - 0.05)
+    delta_max = delta_target + 0.03
     min_credit_pct = cfg.get("strangle_min_credit_pct_spot", 2.0)
     wing_offset = cfg.get("strangle_wing_offset", 200)
 
     best_candidate: TradeSuggestion | None = None
     best_score = 0.0
 
-    # Find short CE strikes
     ce_candidates = []
     pe_candidates = []
     for sd in chain.strikes:
@@ -463,7 +461,6 @@ def _build_hedged_strangle(
 
     for short_ce in ce_candidates:
         for short_pe in pe_candidates:
-            # Protective wings
             long_ce_strike = short_ce.strike_price + wing_offset
             long_pe_strike = short_pe.strike_price - wing_offset
 
@@ -475,7 +472,6 @@ def _build_hedged_strangle(
             if long_ce_sd.ce_ltp <= 0 or long_pe_sd.pe_ltp <= 0:
                 continue
 
-            # Net credit (short strangle - protective wings)
             credit = (
                 short_ce.ce_ltp + short_pe.pe_ltp
                 - long_ce_sd.ce_ltp - long_pe_sd.pe_ltp
@@ -483,12 +479,10 @@ def _build_hedged_strangle(
             if credit <= 0:
                 continue
 
-            # Credit >= 2% of spot
             credit_pct_spot = (credit / spot) * 100
             if credit_pct_spot < min_credit_pct:
                 continue
 
-            # Max loss is wing_offset - credit (on either side)
             max_loss_per_unit = wing_offset - credit
             if credit > 0:
                 rr = max_loss_per_unit / credit
@@ -516,23 +510,23 @@ def _build_hedged_strangle(
                     direction_bias="Neutral",
                     confidence="High",
                     score=round(score, 1),
-                    entry_timing="Enter now — mean-reverting market with elevated IV",
+                    entry_timing="Enter now — rich VRP with stable vol regime",
                     technicals_to_check=[
-                        f"RSI: {technicals.rsi:.1f} (neutral zone)",
-                        f"BB width: {_compute_bb_width_pct(technicals):.2f}% (contracting)",
-                        f"IV percentile: {analytics.iv_percentile:.1f} (elevated)",
+                        f"pVRP: {vol.p_vrp:.2f} (rich — options overpriced)",
+                        f"pVoV: {vol.p_vov:.2f} (stable)",
+                        f"Dynamic delta: {delta_target:.3f}",
                     ],
                     expected_outcome=f"Profit if NIFTY stays between {int(short_pe.strike_price)}-{int(short_ce.strike_price)}",
                     max_profit=f"₹{credit * lot_size:,.0f} per lot",
                     max_loss=f"₹{max_loss_per_unit * lot_size:,.0f} per lot",
-                    stop_loss=f"Exit if premium doubles or short delta > {cfg.get('delta_exit_threshold', 0.30)}",
-                    position_size="Per hedge sizing rules",
+                    stop_loss=f"Dynamic SL: {_dynamic_sl_multiple(vol.p_vov, cfg):.1f}x | delta > {_dynamic_delta_exit(vol.p_rv, cfg):.3f}",
+                    position_size="Per Atlas dynamic sizing",
                     reasoning=[
                         f"Hedged strangle: SELL {int(short_pe.strike_price)} PE / {int(short_ce.strike_price)} CE",
                         f"Protective wings at {int(long_pe_strike)} PE / {int(long_ce_strike)} CE (offset {wing_offset})",
                         f"Net credit: ₹{credit:.1f} ({credit_pct_spot:.2f}% of spot)",
+                        f"Vol regime: pVRP={vol.p_vrp:.2f} (rich), pVoV={vol.p_vov:.2f} (stable)",
                         f"Short deltas: CE={abs(short_ce.ce_delta):.3f}, PE={abs(short_pe.pe_delta):.3f}",
-                        f"Mean-reverting regime: RSI {technicals.rsi:.1f}, BB width {_compute_bb_width_pct(technicals):.2f}%",
                     ],
                 )
 
@@ -540,45 +534,37 @@ def _build_hedged_strangle(
 
 
 # ===================================================================
-# Section 5: Debit Spread Construction
+# Debit Spread Construction (buy_premium regime)
 # ===================================================================
 
-def _build_debit_spread(
+def _build_atlas_debit_spread(
     chain: OptionChainData,
     analytics: OptionsAnalytics,
     technicals: TechnicalIndicators,
+    vol: VolSnapshot,
     cfg: dict,
 ) -> TradeSuggestion | None:
-    """Build a debit spread when IV is low and breakout is confirmed."""
+    """Build debit spread in buy_premium regime (cheap options)."""
     spot = chain.underlying_value
     if spot <= 0:
         return None
 
-    # IV percentile must be low
-    max_iv_pct = cfg.get("debit_max_iv_percentile", 40.0)
-    if analytics.iv_percentile > max_iv_pct:
-        return None
-
-    # Breakout must be confirmed
+    # Breakout must be confirmed for directional debit
     if not _is_breakout(technicals):
         return None
 
     min_rr = cfg.get("debit_min_risk_reward", 2.0)
-    max_risk_pct = cfg.get("debit_max_risk_pct", 0.4)
     lot_size = cfg.get("lot_size", 75)
 
-    # Determine direction from supertrend
     is_bullish = technicals.supertrend_direction == 1
 
     if is_bullish:
         strategy = StrategyName.BULL_CALL_SPREAD
-        # Buy ATM call, sell OTM call
         atm_strike = analytics.atm_strike
         atm_sd = _get_strike_data(chain, atm_strike)
         if atm_sd is None or atm_sd.ce_ltp <= 0:
             return None
 
-        # Try widths of 50 and 100
         for width in [100, 50]:
             sell_strike = atm_strike + width
             sell_sd = _get_strike_data(chain, sell_strike)
@@ -590,15 +576,11 @@ def _build_debit_spread(
                 continue
 
             max_profit = width - net_debit
-            if net_debit > 0:
-                rr = max_profit / net_debit
-            else:
-                continue
-
+            rr = max_profit / net_debit
             if rr < min_rr:
                 continue
 
-            score = rr * 20  # simple scoring
+            score = rr * 20
 
             return TradeSuggestion(
                 strategy=strategy,
@@ -611,22 +593,22 @@ def _build_debit_spread(
                 direction_bias="Bullish",
                 confidence="Medium",
                 score=round(score, 1),
-                entry_timing="Enter now — bullish breakout confirmed",
+                entry_timing="Enter now — buy_premium regime with bullish breakout",
                 technicals_to_check=[
+                    f"pVRP: {vol.p_vrp:.2f} (cheap — options underpriced)",
                     f"Spot: {spot:.0f} > BB upper: {technicals.bb_upper:.0f}",
                     f"Supertrend: bullish",
-                    f"IV percentile: {analytics.iv_percentile:.1f} (low — good for debit)",
                 ],
                 expected_outcome=f"Profit if NIFTY moves above {int(atm_strike + net_debit)}",
                 max_profit=f"₹{max_profit * lot_size:,.0f} per lot",
                 max_loss=f"₹{net_debit * lot_size:,.0f} per lot",
-                stop_loss=f"Exit at {cfg.get('debit_sl_premium_loss_pct', 50.0)}% premium loss or after {cfg.get('debit_max_sessions', 3)} sessions",
-                position_size="Per hedge sizing rules",
+                stop_loss=f"Exit at {cfg.get('debit_sl_premium_loss_pct', 50.0)}% loss or {cfg.get('debit_max_sessions', 3)} sessions",
+                position_size="Per Atlas dynamic sizing",
                 reasoning=[
                     f"Bull call spread: BUY {int(atm_strike)} CE, SELL {int(sell_strike)} CE",
                     f"Net debit: ₹{net_debit:.1f}, max profit: ₹{max_profit:.1f} (RR 1:{rr:.1f})",
-                    f"Breakout confirmed: spot {spot:.0f} above BB upper {technicals.bb_upper:.0f}",
-                    f"Low IV ({analytics.iv_percentile:.1f}th percentile) favors debit strategies",
+                    f"Buy premium regime: pVRP={vol.p_vrp:.2f} (options cheap)",
+                    f"Breakout confirmed: spot {spot:.0f} above BB {technicals.bb_upper:.0f}",
                 ],
             )
     else:
@@ -647,11 +629,7 @@ def _build_debit_spread(
                 continue
 
             max_profit = width - net_debit
-            if net_debit > 0:
-                rr = max_profit / net_debit
-            else:
-                continue
-
+            rr = max_profit / net_debit
             if rr < min_rr:
                 continue
 
@@ -668,22 +646,22 @@ def _build_debit_spread(
                 direction_bias="Bearish",
                 confidence="Medium",
                 score=round(score, 1),
-                entry_timing="Enter now — bearish breakout confirmed",
+                entry_timing="Enter now — buy_premium regime with bearish breakout",
                 technicals_to_check=[
+                    f"pVRP: {vol.p_vrp:.2f} (cheap — options underpriced)",
                     f"Spot: {spot:.0f} < BB lower: {technicals.bb_lower:.0f}",
                     f"Supertrend: bearish",
-                    f"IV percentile: {analytics.iv_percentile:.1f} (low — good for debit)",
                 ],
                 expected_outcome=f"Profit if NIFTY moves below {int(atm_strike - net_debit)}",
                 max_profit=f"₹{max_profit * lot_size:,.0f} per lot",
                 max_loss=f"₹{net_debit * lot_size:,.0f} per lot",
-                stop_loss=f"Exit at {cfg.get('debit_sl_premium_loss_pct', 50.0)}% premium loss or after {cfg.get('debit_max_sessions', 3)} sessions",
-                position_size="Per hedge sizing rules",
+                stop_loss=f"Exit at {cfg.get('debit_sl_premium_loss_pct', 50.0)}% loss or {cfg.get('debit_max_sessions', 3)} sessions",
+                position_size="Per Atlas dynamic sizing",
                 reasoning=[
                     f"Bear put spread: BUY {int(atm_strike)} PE, SELL {int(sell_strike)} PE",
                     f"Net debit: ₹{net_debit:.1f}, max profit: ₹{max_profit:.1f} (RR 1:{rr:.1f})",
-                    f"Breakout confirmed: spot {spot:.0f} below BB lower {technicals.bb_lower:.0f}",
-                    f"Low IV ({analytics.iv_percentile:.1f}th percentile) favors debit strategies",
+                    f"Buy premium regime: pVRP={vol.p_vrp:.2f} (options cheap)",
+                    f"Breakout confirmed: spot {spot:.0f} below BB {technicals.bb_lower:.0f}",
                 ],
             )
 
@@ -691,16 +669,16 @@ def _build_debit_spread(
 
 
 # ===================================================================
-# Section 1+6: Position Sizing
+# Position Sizing (dynamic risk budget)
 # ===================================================================
 
-def _compute_hedge_lots(
+def _compute_atlas_lots(
     suggestion: TradeSuggestion,
     state: PaperTradingState,
+    vol: VolSnapshot,
     cfg: dict,
-    is_half_size: bool = False,
 ) -> tuple[int, str | None]:
-    """Compute lots using 0.5% risk rule. Returns (lots, rejection_reason)."""
+    """Compute lots using dynamic risk-per-trade budget."""
     lot_size = cfg.get("lot_size", 75)
     account_value = state.initial_capital + state.net_realized_pnl
 
@@ -711,11 +689,11 @@ def _compute_hedge_lots(
         buy_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY")
         net_credit_per_unit = sell_prem - buy_prem
         max_loss_per_lot = (width - max(0, net_credit_per_unit)) * lot_size
-    elif suggestion.strategy in _HEDGE_CREDIT:
+    elif suggestion.strategy in _ATLAS_CREDIT:
         net_per_unit = sum(
             leg.ltp * (1 if leg.action == "SELL" else -1) for leg in suggestion.legs
         )
-        sl_mult = cfg.get("credit_sl_multiplier", 1.8)
+        sl_mult = _dynamic_sl_multiple(vol.p_vov, cfg)
         max_loss_per_lot = abs(net_per_unit) * sl_mult * lot_size
     else:
         max_loss_per_lot = abs(sum(
@@ -725,96 +703,42 @@ def _compute_hedge_lots(
     if max_loss_per_lot <= 0:
         return 0, "cannot compute max loss per lot"
 
-    # Risk budget: 0.5% of account
-    max_risk_pct = cfg.get("max_risk_per_trade_pct", 0.5)
-    risk_budget = (max_risk_pct / 100) * account_value
+    # Dynamic risk budget
+    risk_pct = _dynamic_risk_per_trade(vol.p_rv, vol.p_vov, cfg)
+    risk_budget = (risk_pct / 100) * account_value
     lots = math.floor(risk_budget / max_loss_per_lot)
 
-    # Portfolio risk check: sum of all open max losses <= 3% of account
-    max_portfolio_risk_pct = cfg.get("max_portfolio_risk_pct", 3.0)
+    # Dynamic portfolio risk check
+    max_port_risk_pct = _dynamic_max_portfolio_risk(vol.p_vov, cfg)
     existing_risk = sum(p.stop_loss_amount for p in state.open_positions if p.status == PositionStatus.OPEN)
     new_risk = max_loss_per_lot * max(1, lots)
-    if account_value > 0 and (existing_risk + new_risk) / account_value * 100 > max_portfolio_risk_pct:
-        # Reduce lots to fit within portfolio risk
-        allowed_risk = (max_portfolio_risk_pct / 100) * account_value - existing_risk
+    if account_value > 0 and (existing_risk + new_risk) / account_value * 100 > max_port_risk_pct:
+        allowed_risk = (max_port_risk_pct / 100) * account_value - existing_risk
         if allowed_risk <= 0:
-            return 0, f"portfolio risk {(existing_risk / account_value * 100):.1f}% already at limit {max_portfolio_risk_pct}%"
+            return 0, f"portfolio risk at limit {max_port_risk_pct:.1f}%"
         lots = math.floor(allowed_risk / max_loss_per_lot)
 
     # Consecutive loss reduction
     reduce_threshold = cfg.get("consecutive_loss_reduce_threshold", 3)
     if state.consecutive_losses >= reduce_threshold:
         lots = max(1, lots // 2)
-        logger.info("HEDGE: %d consecutive losses — reducing to %d lots", state.consecutive_losses, lots)
-
-    # Half-size mode (high VIX)
-    if is_half_size:
-        lots = max(1, lots // 2)
+        logger.info("ATLAS: %d consecutive losses — reducing to %d lots", state.consecutive_losses, lots)
 
     if lots < 1:
-        return 0, f"max_loss_per_lot ₹{max_loss_per_lot:.0f} > 0.5% risk budget ₹{risk_budget:.0f}"
+        return 0, f"max_loss_per_lot ₹{max_loss_per_lot:.0f} > risk budget ₹{risk_budget:.0f}"
 
     return lots, None
 
 
 # ===================================================================
-# Section 2: Global Hard Gates
+# Liquidity + Fill Filters (reuses hedge pattern)
 # ===================================================================
 
-def _check_hedge_gates(
-    state: PaperTradingState,
+def _check_atlas_liquidity(
     suggestion: TradeSuggestion,
     chain: OptionChainData,
     cfg: dict,
 ) -> str | None:
-    """Check all global hard risk limits. Returns rejection reason or None."""
-    account_value = state.initial_capital + state.net_realized_pnl
-    lot_size = cfg.get("lot_size", 75)
-
-    # 1.25% daily loss -> hard shutdown
-    daily_loss_pct = cfg.get("daily_loss_shutdown_pct", 1.25)
-    if state.daily_start_capital > 0:
-        daily_pnl = account_value - state.daily_start_capital
-        if daily_pnl <= -(state.daily_start_capital * daily_loss_pct / 100):
-            return f"daily loss shutdown: {abs(daily_pnl):.0f} > {daily_loss_pct}% of daily capital"
-
-    # 2% weekly drawdown -> stop for week
-    weekly_dd_pct = cfg.get("weekly_drawdown_shutdown_pct", 2.0)
-    if state.weekly_start_capital > 0:
-        weekly_pnl = account_value - state.weekly_start_capital
-        if weekly_pnl <= -(state.weekly_start_capital * weekly_dd_pct / 100):
-            return f"weekly drawdown shutdown: {abs(weekly_pnl):.0f} > {weekly_dd_pct}% of weekly capital"
-
-    # Trading halted check
-    if state.trading_halted:
-        return "trading halted by portfolio defense (consecutive losses)"
-
-    # 25% max margin utilization
-    max_margin_util = cfg.get("max_margin_utilization_pct", 25.0)
-    if account_value > 0:
-        margin_util = (state.margin_in_use / account_value) * 100
-        if margin_util > max_margin_util:
-            return f"margin utilization {margin_util:.1f}% > max {max_margin_util}%"
-
-    # Block naked unlimited-risk positions (verify BUY legs present for all strategies)
-    sell_legs = [leg for leg in suggestion.legs if leg.action == "SELL"]
-    buy_legs = [leg for leg in suggestion.legs if leg.action == "BUY"]
-    if sell_legs and not buy_legs:
-        return "HEDGE blocks naked (unlimited-risk) positions — protective legs required"
-
-    return None
-
-
-# ===================================================================
-# Section 7: Liquidity + Execution Filters
-# ===================================================================
-
-def _check_hedge_liquidity(
-    suggestion: TradeSuggestion,
-    chain: OptionChainData,
-    cfg: dict,
-) -> str | None:
-    """Check liquidity requirements for hedge trades."""
     leg_strikes = [leg.strike for leg in suggestion.legs]
     min_oi = cfg.get("min_oi", 15_000)
     min_vol = cfg.get("min_volume", 2_000)
@@ -825,12 +749,11 @@ def _check_hedge_liquidity(
     return None
 
 
-def _apply_hedge_fills(
+def _apply_atlas_fills(
     suggestion: TradeSuggestion,
     chain: OptionChainData,
     cfg: dict,
 ) -> tuple[list[TradeLeg], str | None]:
-    """Apply bid/ask pricing + slippage. Returns (new_legs, rejection_reason)."""
     slippage = cfg.get("slippage_per_leg", 0.05)
     new_legs: list[TradeLeg] = []
 
@@ -842,16 +765,10 @@ def _apply_hedge_fills(
 
         if leg.action == "SELL":
             bid = sd.ce_bid if leg.option_type == "CE" else sd.pe_bid
-            if bid > 0:
-                fill_price = max(0.05, bid - slippage)
-            else:
-                fill_price = max(0.05, leg.ltp - slippage)
+            fill_price = max(0.05, (bid if bid > 0 else leg.ltp) - slippage)
         else:
             ask = sd.ce_ask if leg.option_type == "CE" else sd.pe_ask
-            if ask > 0:
-                fill_price = ask + slippage
-            else:
-                fill_price = leg.ltp + slippage
+            fill_price = (ask if ask > 0 else leg.ltp) + slippage
 
         new_legs.append(leg.model_copy(update={"ltp": round(fill_price, 2)}))
 
@@ -861,7 +778,7 @@ def _apply_hedge_fills(
     buy_prem = sum(l.ltp for l in new_legs if l.action == "BUY")
     net_credit = sell_prem - buy_prem
 
-    if suggestion.strategy in _HEDGE_CREDIT and net_credit <= 0:
+    if suggestion.strategy in _ATLAS_CREDIT and net_credit <= 0:
         return new_legs, "no net credit after realistic fills"
 
     if suggestion.strategy in _SPREAD_STRATEGIES and net_credit > 0:
@@ -875,15 +792,60 @@ def _apply_hedge_fills(
 
 
 # ===================================================================
-# Section 8: Portfolio Structure
+# Global Hard Gates
 # ===================================================================
 
-def _check_portfolio_structure(
+def _check_atlas_gates(
+    state: PaperTradingState,
+    suggestion: TradeSuggestion,
+    chain: OptionChainData,
+    cfg: dict,
+) -> str | None:
+    account_value = state.initial_capital + state.net_realized_pnl
+
+    # Daily loss shutdown
+    daily_loss_pct = cfg.get("daily_loss_shutdown_pct", 1.25)
+    if state.daily_start_capital > 0:
+        daily_pnl = account_value - state.daily_start_capital
+        if daily_pnl <= -(state.daily_start_capital * daily_loss_pct / 100):
+            return f"daily loss shutdown: {abs(daily_pnl):.0f} > {daily_loss_pct}%"
+
+    # Weekly drawdown shutdown
+    weekly_dd_pct = cfg.get("weekly_drawdown_shutdown_pct", 2.0)
+    if state.weekly_start_capital > 0:
+        weekly_pnl = account_value - state.weekly_start_capital
+        if weekly_pnl <= -(state.weekly_start_capital * weekly_dd_pct / 100):
+            return f"weekly drawdown shutdown: {abs(weekly_pnl):.0f} > {weekly_dd_pct}%"
+
+    # Trading halted
+    if state.trading_halted:
+        return "trading halted by portfolio defense"
+
+    # Max margin utilization
+    max_margin_util = cfg.get("max_margin_utilization_pct", 25.0)
+    if account_value > 0:
+        margin_util = (state.margin_in_use / account_value) * 100
+        if margin_util > max_margin_util:
+            return f"margin utilization {margin_util:.1f}% > {max_margin_util}%"
+
+    # Block naked positions
+    sell_legs = [leg for leg in suggestion.legs if leg.action == "SELL"]
+    buy_legs = [leg for leg in suggestion.legs if leg.action == "BUY"]
+    if sell_legs and not buy_legs:
+        return "ATLAS blocks naked positions — protective legs required"
+
+    return None
+
+
+# ===================================================================
+# Portfolio Structure
+# ===================================================================
+
+def _check_atlas_portfolio_structure(
     state: PaperTradingState,
     suggestion: TradeSuggestion,
     cfg: dict,
 ) -> str | None:
-    """Check portfolio structure limits. Returns rejection reason or None."""
     max_open = cfg.get("max_open_positions", 4)
     open_positions = [p for p in state.open_positions if p.status == PositionStatus.OPEN]
     if len(open_positions) >= max_open:
@@ -908,10 +870,10 @@ def _check_portfolio_structure(
     primary_limit = account_value * cfg.get("primary_allocation_pct", 80.0) / 100
     secondary_limit = account_value * cfg.get("secondary_allocation_pct", 20.0) / 100
 
-    if suggestion.strategy in _HEDGE_PRIMARY:
+    if suggestion.strategy in _ATLAS_PRIMARY:
         if primary_used >= primary_limit:
             return f"primary allocation exhausted ({primary_used:.0f}/{primary_limit:.0f})"
-    elif suggestion.strategy in _HEDGE_SECONDARY:
+    elif suggestion.strategy in _ATLAS_SECONDARY:
         if secondary_used >= secondary_limit:
             return f"secondary allocation exhausted ({secondary_used:.0f}/{secondary_limit:.0f})"
 
@@ -919,80 +881,26 @@ def _check_portfolio_structure(
 
 
 # ===================================================================
-# Section 9: Defensive Adjustments (Position Management)
+# Stop Loss Rules (dynamic)
 # ===================================================================
 
-def _check_defensive_adjustments(
+def _check_atlas_credit_sl(
     position: PaperPosition,
     chain: OptionChainData,
-    technicals: TechnicalIndicators,
-    cfg: dict,
-) -> tuple[str | None, str]:
-    """Check if position needs defensive adjustment.
-
-    Returns (exit_reason | None, note for reasoning).
-    """
-    delta_exit = cfg.get("delta_exit_threshold", 0.30)
-    delta_warn = cfg.get("delta_adjustment_threshold", 0.25)
-    notes: list[str] = []
-
-    for leg in position.legs:
-        if leg.action != "SELL":
-            continue
-        sd = _get_strike_data(chain, leg.strike)
-        if sd is None:
-            continue
-
-        delta = abs(sd.ce_delta if leg.option_type == "CE" else sd.pe_delta)
-
-        if delta >= delta_exit:
-            return (
-                f"short {leg.option_type} {int(leg.strike)} delta {delta:.3f} >= {delta_exit} — forced exit",
-                f"Delta breach: {leg.option_type} {int(leg.strike)} delta={delta:.3f}",
-            )
-
-        if delta >= delta_warn:
-            notes.append(
-                f"WARNING: {leg.option_type} {int(leg.strike)} delta {delta:.3f} approaching {delta_exit} — consider rolling"
-            )
-            logger.warning("HEDGE: %s", notes[-1])
-
-    # Market breakout detection — close all range-bound positions
-    is_credit_range = position.strategy in {
-        StrategyName.IRON_CONDOR.value,
-        StrategyName.SHORT_STRANGLE.value,
-    }
-    if is_credit_range and _is_breakout(technicals):
-        return (
-            f"market breakout detected — closing range-bound {position.strategy}",
-            "Breakout: spot outside BB with supertrend confirmation",
-        )
-
-    return None, "; ".join(notes) if notes else ""
-
-
-# ===================================================================
-# Section 3C: Stop Loss Rules
-# ===================================================================
-
-def _check_hedge_credit_sl(
-    position: PaperPosition,
-    chain: OptionChainData,
-    technicals: TechnicalIndicators,
+    vol: VolSnapshot,
     cfg: dict,
 ) -> PositionStatus | None:
-    """Check hedge credit stop loss: 1.8x credit OR delta > 0.30 OR technical breach."""
+    """Dynamic credit SL: sl_mult(pVoV) x credit OR delta > delta_exit(pRV)."""
     pnl = position.total_unrealized_pnl
-    sl_mult = cfg.get("credit_sl_multiplier", 1.8)
+    sl_mult = _dynamic_sl_multiple(vol.p_vov, cfg)
 
-    # 1.8x credit loss
     if position.net_premium > 0 and pnl <= -(abs(position.net_premium) * sl_mult):
-        logger.info("HEDGE SL: %s loss %.0f >= %.1fx credit %.0f",
+        logger.info("ATLAS SL: %s loss %.0f >= %.1fx credit %.0f",
                      position.strategy, abs(pnl), sl_mult, abs(position.net_premium))
         return PositionStatus.CLOSED_STOP_LOSS
 
-    # Delta breach (checked in defensive adjustments, but double-check here)
-    delta_exit = cfg.get("delta_exit_threshold", 0.30)
+    # Dynamic delta exit
+    delta_exit = _dynamic_delta_exit(vol.p_rv, cfg)
     for leg in position.legs:
         if leg.action != "SELL":
             continue
@@ -1001,39 +909,52 @@ def _check_hedge_credit_sl(
             continue
         delta = abs(sd.ce_delta if leg.option_type == "CE" else sd.pe_delta)
         if delta >= delta_exit:
-            logger.info("HEDGE SL: %s delta %.3f >= %.2f on %s %d",
-                         position.strategy, delta, delta_exit, leg.option_type, int(leg.strike))
+            logger.info("ATLAS SL: delta %.3f >= dynamic exit %.3f on %s %d",
+                         delta, delta_exit, leg.option_type, int(leg.strike))
             return PositionStatus.CLOSED_STOP_LOSS
 
     return None
 
 
-def _check_hedge_strangle_sl(
+def _check_atlas_strangle_sl(
     position: PaperPosition,
     chain: OptionChainData,
+    vol: VolSnapshot,
     cfg: dict,
 ) -> PositionStatus | None:
-    """Strangle SL: premium doubles OR delta > 0.30 OR total loss = 1x credit."""
+    """Strangle SL: premium doubles OR dynamic delta exit."""
     pnl = position.total_unrealized_pnl
 
-    # Total loss = 1x credit received (premium doubles means loss = credit)
     if position.net_premium > 0 and pnl <= -abs(position.net_premium):
-        logger.info("HEDGE SL: strangle premium doubled — loss %.0f >= credit %.0f",
+        logger.info("ATLAS SL: strangle premium doubled — loss %.0f >= credit %.0f",
                      abs(pnl), abs(position.net_premium))
         return PositionStatus.CLOSED_STOP_LOSS
 
-    # Per-leg check: if any sell leg's current premium > 2x entry
     for leg in position.legs:
         if leg.action == "SELL" and leg.entry_ltp > 0:
             if leg.current_ltp >= 2 * leg.entry_ltp:
-                logger.info("HEDGE SL: strangle leg %s %d premium doubled (%.1f -> %.1f)",
+                logger.info("ATLAS SL: strangle leg %s %d premium doubled (%.1f -> %.1f)",
                              leg.option_type, int(leg.strike), leg.entry_ltp, leg.current_ltp)
                 return PositionStatus.CLOSED_STOP_LOSS
+
+    # Dynamic delta exit
+    delta_exit = _dynamic_delta_exit(vol.p_rv, cfg)
+    for leg in position.legs:
+        if leg.action != "SELL":
+            continue
+        sd = _get_strike_data(chain, leg.strike)
+        if sd is None:
+            continue
+        delta = abs(sd.ce_delta if leg.option_type == "CE" else sd.pe_delta)
+        if delta >= delta_exit:
+            logger.info("ATLAS SL: strangle delta %.3f >= exit %.3f",
+                         delta, delta_exit)
+            return PositionStatus.CLOSED_STOP_LOSS
 
     return None
 
 
-def _check_hedge_debit_sl(
+def _check_atlas_debit_sl(
     position: PaperPosition,
     cfg: dict,
 ) -> PositionStatus | None:
@@ -1052,26 +973,49 @@ def _check_hedge_debit_sl(
 
 
 # ===================================================================
+# Dynamic Take Profit
+# ===================================================================
+
+def _check_atlas_take_profit(
+    position: PaperPosition,
+    vol: VolSnapshot,
+    cfg: dict,
+) -> PositionStatus | None:
+    """Dynamic take profit: capture % varies with vol."""
+    pnl = position.total_unrealized_pnl
+    strategy_type = classify_strategy(position.strategy)
+
+    if strategy_type == StrategyType.CREDIT and position.net_premium > 0:
+        tp_pct = _dynamic_take_profit(vol.p_rv, cfg)
+        target = abs(position.net_premium) * tp_pct
+        if pnl >= target:
+            logger.info("ATLAS TP: %s pnl %.0f >= %.0f%% of credit (%.0f)",
+                         position.strategy, pnl, tp_pct * 100, target)
+            return PositionStatus.CLOSED_PROFIT_TARGET
+
+    return None
+
+
+# ===================================================================
 # Enrichment
 # ===================================================================
 
-def _enrich_hedge_suggestion(
+def _enrich_atlas_suggestion(
     suggestion: TradeSuggestion,
     chain: OptionChainData,
     analytics: OptionsAnalytics,
     technicals: TechnicalIndicators,
-    vix: float | None,
+    vol: VolSnapshot,
     cfg: dict,
     lots: int,
 ) -> TradeSuggestion:
-    """Populate numeric fields and add regime justification to reasoning."""
     lot_size = cfg.get("lot_size", 75)
 
     sell_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "SELL")
     buy_prem = sum(leg.ltp for leg in suggestion.legs if leg.action == "BUY")
     net = sell_prem - buy_prem
     width = _compute_spread_width(suggestion.legs)
-    is_credit = suggestion.strategy in _HEDGE_CREDIT
+    is_credit = suggestion.strategy in _ATLAS_CREDIT
 
     if is_credit:
         if width > 0:
@@ -1079,7 +1023,8 @@ def _enrich_hedge_suggestion(
             max_loss = (width - net) * lot_size * lots
         else:
             max_profit = net * lot_size * lots
-            max_loss = net * 1.8 * lot_size * lots
+            sl_mult = _dynamic_sl_multiple(vol.p_vov, cfg)
+            max_loss = net * sl_mult * lot_size * lots
         rr = max_loss / max_profit if max_profit > 0 else 0.0
     else:
         net_debit = buy_prem - sell_prem
@@ -1111,13 +1056,15 @@ def _enrich_hedge_suggestion(
         max_ba_pct=cfg.get("max_bid_ask_pct", 3.0),
     )
 
-    # Regime justification reasoning
+    # Dynamic params info
+    dyn_params = _get_all_dynamic_params(vol, cfg)
     account_value = cfg.get("initial_capital", 2_500_000)
     risk_pct = (max_loss / account_value * 100) if account_value > 0 else 0
-    bb_width = _compute_bb_width_pct(technicals)
+
     extra_reasoning = [
-        f"Regime: VIX={vix:.1f if vix else 'N/A'}, IV%ile={analytics.iv_percentile:.1f}, BB width={bb_width:.2f}%",
-        f"Range-bound: {'Yes' if _is_range_bound(technicals) else 'No'}",
+        f"Vol snapshot: RV20={vol.rv_20:.1f}% VIX={vol.vix:.1f} VRP={vol.vrp:.1f}",
+        f"Percentiles: pRV={vol.p_rv:.2f} pVoV={vol.p_vov:.2f} pVRP={vol.p_vrp:.2f}",
+        f"Dynamic: delta={dyn_params['strike_delta']:.3f} SL={dyn_params['sl_multiple']:.1f}x TP={dyn_params['take_profit']:.0%}",
         f"Risk: {risk_pct:.2f}% of capital (₹{max_loss:,.0f} max loss for {lots} lots)",
     ]
 
@@ -1137,15 +1084,15 @@ def _enrich_hedge_suggestion(
 # ===================================================================
 
 @register_algorithm
-class HedgeAlgorithm(TradingAlgorithm):
-    """V3 Hedge algorithm — Capital preservation with strict drawdown limits."""
+class AtlasAlgorithm(TradingAlgorithm):
+    """V4 Atlas — Distribution-based dynamic thresholds."""
 
-    name = "hedge"
-    display_name = "V3 Hedge"
-    description = "Capital preservation: 1.5-3% monthly, max 8% annual drawdown"
+    name = "atlas"
+    display_name = "V4 Atlas"
+    description = "Dynamic thresholds from NIFTY's own volatility distribution"
 
     # ---------------------------------------------------------------
-    # generate_suggestions — Build own candidates from chain scan
+    # generate_suggestions
     # ---------------------------------------------------------------
 
     def generate_suggestions(
@@ -1154,96 +1101,107 @@ class HedgeAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
     ) -> list[TradeSuggestion]:
-        """Generate hedge trade candidates independently (no V1 dependency)."""
         cfg = self.config
         accepted: list[TradeSuggestion] = []
         rejected: list[TradeSuggestion] = []
 
-        # Fetch India VIX
-        vix = _fetch_india_vix(cfg)
-        if vix is None:
-            # Fallback to ATM IV as proxy
-            vix = analytics.atm_iv
-            logger.info("HEDGE: VIX fetch failed, using ATM IV %.1f as proxy", vix)
+        # Fetch VolSnapshot
+        spot = chain.underlying_value
+        dte = _parse_dte(chain.expiry) if chain.expiry else 5
+        vol = get_today_vol_snapshot(spot, dte)
+        if vol is None:
+            vol = _neutral_snapshot()
+            vol = VolSnapshot(
+                rv_5=vol.rv_5, rv_10=vol.rv_10, rv_20=vol.rv_20,
+                vov_20=vol.vov_20, vix=analytics.atm_iv if analytics.atm_iv > 0 else 15.0,
+                vrp=vol.vrp, p_rv=vol.p_rv, p_vov=vol.p_vov, p_vrp=vol.p_vrp,
+                em=_compute_expected_move(spot, analytics.atm_iv, dte),
+                date=vol.date,
+            )
+            logger.warning("ATLAS: VolSnapshot unavailable, using neutral fallback")
 
-        # --- Credit strategies ---
-        credit_rejection, is_half_size = _check_credit_regime(analytics, technicals, vix, cfg)
+        # Classify regime
+        regime = _classify_regime(vol, cfg)
+        dyn_params = _get_all_dynamic_params(vol, cfg)
 
-        if credit_rejection is None:
-            # Build iron condor
-            ic = _build_iron_condor(chain, analytics, technicals, cfg)
+        logger.info(
+            "ATLAS regime=%s | pRV=%.2f pVoV=%.2f pVRP=%.2f | delta=%.3f credit=%.3f SL=%.1fx TP=%.0f%% BE=%.2fx",
+            regime, vol.p_rv, vol.p_vov, vol.p_vrp,
+            dyn_params["strike_delta"], dyn_params["min_credit_ratio"],
+            dyn_params["sl_multiple"], dyn_params["take_profit"] * 100,
+            dyn_params["breakeven_mult"],
+        )
+
+        # Macro event check
+        macro_override = cfg.get("macro_event_override", False)
+        if not macro_override:
+            near_event, event_label = is_near_event(days_ahead=1)
+            if near_event and regime == "sell_premium":
+                logger.info("ATLAS: Macro event within 24h: %s — downgrading to stand_down", event_label)
+                regime = "stand_down"
+
+        if regime == "sell_premium":
+            # Build IC
+            ic = _build_atlas_iron_condor(chain, analytics, technicals, vol, cfg)
             if ic is not None:
-                # Liquidity filter
-                liq_reject = _check_hedge_liquidity(ic, chain, cfg)
+                liq_reject = _check_atlas_liquidity(ic, chain, cfg)
                 if liq_reject:
                     rejected.append(ic.model_copy(update={"rejection_reason": liq_reject, "score": 0.0}))
-                    logger.info("HEDGE REJECTED: %s — %s", ic.strategy.value, liq_reject)
                 else:
-                    # Realistic fills
-                    new_legs, fill_reject = _apply_hedge_fills(ic, chain, cfg)
+                    new_legs, fill_reject = _apply_atlas_fills(ic, chain, cfg)
                     if fill_reject:
                         rejected.append(ic.model_copy(update={"rejection_reason": fill_reject, "score": 0.0}))
-                        logger.info("HEDGE REJECTED: %s — %s", ic.strategy.value, fill_reject)
                     else:
                         ic = ic.model_copy(update={"legs": new_legs})
-                        enriched = _enrich_hedge_suggestion(ic, chain, analytics, technicals, vix, cfg, lots=1)
+                        enriched = _enrich_atlas_suggestion(ic, chain, analytics, technicals, vol, cfg, lots=1)
                         accepted.append(enriched)
-                        logger.info(
-                            "HEDGE ACCEPTED: %s | RR=%.2f | POP=%.1f%% | liq=%.0f",
-                            enriched.strategy.value, enriched.risk_reward_ratio,
-                            enriched.pop, enriched.liquidity_score,
-                        )
+                        logger.info("ATLAS ACCEPTED: %s | RR=%.2f | POP=%.1f%% | liq=%.0f",
+                                    enriched.strategy.value, enriched.risk_reward_ratio,
+                                    enriched.pop, enriched.liquidity_score)
 
             # Build hedged strangle
-            hs = _build_hedged_strangle(chain, analytics, technicals, cfg)
+            hs = _build_atlas_hedged_strangle(chain, analytics, technicals, vol, cfg)
             if hs is not None:
-                liq_reject = _check_hedge_liquidity(hs, chain, cfg)
+                liq_reject = _check_atlas_liquidity(hs, chain, cfg)
                 if liq_reject:
                     rejected.append(hs.model_copy(update={"rejection_reason": liq_reject, "score": 0.0}))
-                    logger.info("HEDGE REJECTED: %s — %s", hs.strategy.value, liq_reject)
                 else:
-                    new_legs, fill_reject = _apply_hedge_fills(hs, chain, cfg)
+                    new_legs, fill_reject = _apply_atlas_fills(hs, chain, cfg)
                     if fill_reject:
                         rejected.append(hs.model_copy(update={"rejection_reason": fill_reject, "score": 0.0}))
-                        logger.info("HEDGE REJECTED: %s — %s", hs.strategy.value, fill_reject)
                     else:
                         hs = hs.model_copy(update={"legs": new_legs})
-                        enriched = _enrich_hedge_suggestion(hs, chain, analytics, technicals, vix, cfg, lots=1)
+                        enriched = _enrich_atlas_suggestion(hs, chain, analytics, technicals, vol, cfg, lots=1)
                         accepted.append(enriched)
-                        logger.info(
-                            "HEDGE ACCEPTED: %s | RR=%.2f | POP=%.1f%% | liq=%.0f",
-                            enriched.strategy.value, enriched.risk_reward_ratio,
-                            enriched.pop, enriched.liquidity_score,
-                        )
-        else:
-            logger.info("HEDGE: Credit regime blocked — %s", credit_rejection)
+                        logger.info("ATLAS ACCEPTED: %s | RR=%.2f | POP=%.1f%% | liq=%.0f",
+                                    enriched.strategy.value, enriched.risk_reward_ratio,
+                                    enriched.pop, enriched.liquidity_score)
 
-        # --- Debit strategies ---
-        ds = _build_debit_spread(chain, analytics, technicals, cfg)
-        if ds is not None:
-            liq_reject = _check_hedge_liquidity(ds, chain, cfg)
-            if liq_reject:
-                rejected.append(ds.model_copy(update={"rejection_reason": liq_reject, "score": 0.0}))
-                logger.info("HEDGE REJECTED: %s — %s", ds.strategy.value, liq_reject)
-            else:
-                new_legs, fill_reject = _apply_hedge_fills(ds, chain, cfg)
-                if fill_reject:
-                    rejected.append(ds.model_copy(update={"rejection_reason": fill_reject, "score": 0.0}))
-                    logger.info("HEDGE REJECTED: %s — %s", ds.strategy.value, fill_reject)
+        elif regime == "buy_premium":
+            ds = _build_atlas_debit_spread(chain, analytics, technicals, vol, cfg)
+            if ds is not None:
+                liq_reject = _check_atlas_liquidity(ds, chain, cfg)
+                if liq_reject:
+                    rejected.append(ds.model_copy(update={"rejection_reason": liq_reject, "score": 0.0}))
                 else:
-                    ds = ds.model_copy(update={"legs": new_legs})
-                    enriched = _enrich_hedge_suggestion(ds, chain, analytics, technicals, vix, cfg, lots=1)
-                    accepted.append(enriched)
-                    logger.info(
-                        "HEDGE ACCEPTED: %s | RR=%.2f | POP=%.1f%% | liq=%.0f",
-                        enriched.strategy.value, enriched.risk_reward_ratio,
-                        enriched.pop, enriched.liquidity_score,
-                    )
+                    new_legs, fill_reject = _apply_atlas_fills(ds, chain, cfg)
+                    if fill_reject:
+                        rejected.append(ds.model_copy(update={"rejection_reason": fill_reject, "score": 0.0}))
+                    else:
+                        ds = ds.model_copy(update={"legs": new_legs})
+                        enriched = _enrich_atlas_suggestion(ds, chain, analytics, technicals, vol, cfg, lots=1)
+                        accepted.append(enriched)
+                        logger.info("ATLAS ACCEPTED: %s | RR=%.2f | POP=%.1f%% | liq=%.0f",
+                                    enriched.strategy.value, enriched.risk_reward_ratio,
+                                    enriched.pop, enriched.liquidity_score)
+
+        else:
+            logger.info("ATLAS: Stand-down regime — no new suggestions")
 
         return sorted(accepted, key=lambda s: s.score, reverse=True) + rejected
 
     # ---------------------------------------------------------------
-    # evaluate_and_manage — Manage positions + open new
+    # evaluate_and_manage
     # ---------------------------------------------------------------
 
     def evaluate_and_manage(
@@ -1256,19 +1214,30 @@ class HedgeAlgorithm(TradingAlgorithm):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
     ) -> PaperTradingState:
-        """Manage positions with hedge-specific risk rules."""
         if lot_size is None:
             lot_size = self.config.get("lot_size", 75)
         cfg = self.config
 
-        # Reset daily/weekly period tracking
+        # Reset daily/weekly
         state = _reset_period_tracking(state, cfg)
 
-        # Fetch VIX for regime awareness during management
-        vix = _fetch_india_vix(cfg) if chain else None
-        _, is_half_size = (None, False)
-        if analytics and technicals and vix is not None:
-            _, is_half_size = _check_credit_regime(analytics, technicals, vix, cfg)
+        # Fetch VolSnapshot
+        spot = chain.underlying_value if chain else 0.0
+        dte = _parse_dte(chain.expiry) if chain and chain.expiry else 5
+        vol = get_today_vol_snapshot(spot, dte)
+        if vol is None:
+            vol = _neutral_snapshot()
+            logger.warning("ATLAS: VolSnapshot unavailable during management, using neutral fallback")
+
+        regime = _classify_regime(vol, cfg)
+        dyn_params = _get_all_dynamic_params(vol, cfg)
+
+        # Store regime + dynamic params on state
+        state = state.model_copy(update={
+            "vol_regime": regime,
+            "vol_snapshot_ts": _time.time(),
+            "vol_dynamic_params": dyn_params,
+        })
 
         # --- Phase 1: Manage existing positions ---
         still_open: list[PaperPosition] = []
@@ -1293,30 +1262,45 @@ class HedgeAlgorithm(TradingAlgorithm):
             exit_reason = None
             strategy_type = classify_strategy(position.strategy)
 
-            # Hedge-specific stop losses
+            # Dynamic stop losses
             if chain:
                 if strategy_type == StrategyType.CREDIT:
                     if position.strategy == StrategyName.SHORT_STRANGLE.value:
-                        exit_reason_sl = _check_hedge_strangle_sl(position, chain, cfg)
+                        exit_reason_sl = _check_atlas_strangle_sl(position, chain, vol, cfg)
                     else:
-                        exit_reason_sl = _check_hedge_credit_sl(position, chain, technicals or TechnicalIndicators(), cfg)
+                        exit_reason_sl = _check_atlas_credit_sl(position, chain, vol, cfg)
                     if exit_reason_sl:
                         exit_reason = exit_reason_sl
                 elif strategy_type == StrategyType.DEBIT:
-                    exit_reason_sl = _check_hedge_debit_sl(position, cfg)
+                    exit_reason_sl = _check_atlas_debit_sl(position, cfg)
                     if exit_reason_sl:
                         exit_reason = exit_reason_sl
 
-                # Defensive adjustments (delta monitoring, breakout closure)
-                if exit_reason is None and technicals:
-                    def_exit, def_note = _check_defensive_adjustments(position, chain, technicals, cfg)
-                    if def_exit:
-                        logger.info("HEDGE DEFENSIVE: %s — %s", position.strategy, def_exit)
-                        exit_reason = PositionStatus.CLOSED_STOP_LOSS
-                    elif def_note:
-                        logger.info("HEDGE NOTE: %s — %s", position.strategy, def_note)
+            # Dynamic take profit
+            if exit_reason is None:
+                tp = _check_atlas_take_profit(position, vol, cfg)
+                if tp:
+                    exit_reason = tp
 
-            # Standard exit conditions (PT, EOD)
+            # Regime-change exit: if regime flips to stand_down while holding credit
+            if exit_reason is None and regime == "stand_down" and strategy_type == StrategyType.CREDIT:
+                # Only close if position is profitable (don't force-close at a loss)
+                if pnl > 0:
+                    logger.info("ATLAS: Regime changed to stand_down — closing profitable credit %s",
+                                position.strategy)
+                    exit_reason = PositionStatus.CLOSED_PROFIT_TARGET
+
+            # Breakout detection for credit positions
+            if exit_reason is None and chain and technicals:
+                is_credit_range = position.strategy in {
+                    StrategyName.IRON_CONDOR.value,
+                    StrategyName.SHORT_STRANGLE.value,
+                }
+                if is_credit_range and _is_breakout(technicals):
+                    logger.info("ATLAS: Breakout detected — closing %s", position.strategy)
+                    exit_reason = PositionStatus.CLOSED_STOP_LOSS
+
+            # Standard exit conditions (EOD)
             if exit_reason is None:
                 exit_reason = check_exit_conditions(position)
 
@@ -1325,11 +1309,10 @@ class HedgeAlgorithm(TradingAlgorithm):
                     position, exit_reason,
                     technicals=technicals, analytics=analytics, chain=chain,
                 )
-                logger.info(
-                    "HEDGE CLOSED: %s | reason=%s | pnl=%.2f",
-                    record.strategy, exit_reason.value if hasattr(exit_reason, 'value') else exit_reason,
-                    record.net_pnl,
-                )
+                logger.info("ATLAS CLOSED: %s | reason=%s | pnl=%.2f",
+                             record.strategy,
+                             exit_reason.value if hasattr(exit_reason, 'value') else exit_reason,
+                             record.net_pnl)
                 new_records.append(record)
                 added_realized += record.realized_pnl
                 added_costs += record.execution_cost
@@ -1351,13 +1334,11 @@ class HedgeAlgorithm(TradingAlgorithm):
         halt_after = cfg.get("consecutive_loss_halt", 5)
         if consecutive_losses >= halt_after:
             trading_halted = True
-            logger.warning("HEDGE HALTED: %d consecutive losses >= %d", consecutive_losses, halt_after)
+            logger.warning("ATLAS HALTED: %d consecutive losses >= %d", consecutive_losses, halt_after)
 
-        # Track peak capital
         current_capital = state.initial_capital + state.total_realized_pnl + added_realized - (state.total_execution_costs + added_costs)
         peak_capital = max(state.peak_capital, current_capital)
 
-        # Build intermediate state
         state = state.model_copy(update={
             "open_positions": still_open,
             "trade_log": state.trade_log + new_records,
@@ -1369,26 +1350,26 @@ class HedgeAlgorithm(TradingAlgorithm):
             "peak_capital": peak_capital,
         })
 
-        # --- Initialize session start capital ---
+        # Initialize session start capital
         if state.session_start_capital == 0.0:
             state = state.model_copy(update={
                 "session_start_capital": state.initial_capital + state.net_realized_pnl,
             })
 
-        # --- Check daily/weekly shutdown ---
+        # Check daily/weekly shutdown
         account_value = state.initial_capital + state.net_realized_pnl
         daily_loss_pct = cfg.get("daily_loss_shutdown_pct", 1.25)
         if state.daily_start_capital > 0:
             daily_pnl = account_value - state.daily_start_capital
             if daily_pnl <= -(state.daily_start_capital * daily_loss_pct / 100):
-                logger.warning("HEDGE SHUTDOWN: daily loss %.0f > %.1f%%", abs(daily_pnl), daily_loss_pct)
+                logger.warning("ATLAS SHUTDOWN: daily loss %.0f > %.1f%%", abs(daily_pnl), daily_loss_pct)
                 return state
 
         weekly_dd_pct = cfg.get("weekly_drawdown_shutdown_pct", 2.0)
         if state.weekly_start_capital > 0:
             weekly_pnl = account_value - state.weekly_start_capital
             if weekly_pnl <= -(state.weekly_start_capital * weekly_dd_pct / 100):
-                logger.warning("HEDGE SHUTDOWN: weekly drawdown %.0f > %.1f%%", abs(weekly_pnl), weekly_dd_pct)
+                logger.warning("ATLAS SHUTDOWN: weekly drawdown %.0f > %.1f%%", abs(weekly_pnl), weekly_dd_pct)
                 return state
 
         # --- Phase 2: Open new positions ---
@@ -1396,7 +1377,7 @@ class HedgeAlgorithm(TradingAlgorithm):
             return state
 
         if state.trading_halted:
-            logger.info("HEDGE: Trading halted — skipping new positions")
+            logger.info("ATLAS: Trading halted — skipping new positions")
             return state
 
         # Data staleness guard
@@ -1415,15 +1396,15 @@ class HedgeAlgorithm(TradingAlgorithm):
                 continue
 
             # Global gates
-            gate_reason = _check_hedge_gates(state, suggestion, chain, cfg)
+            gate_reason = _check_atlas_gates(state, suggestion, chain, cfg)
             if gate_reason:
-                logger.info("HEDGE GATE BLOCKED: %s — %s", suggestion.strategy.value, gate_reason)
+                logger.info("ATLAS GATE BLOCKED: %s — %s", suggestion.strategy.value, gate_reason)
                 continue
 
             # Portfolio structure
-            struct_reason = _check_portfolio_structure(state, suggestion, cfg)
+            struct_reason = _check_atlas_portfolio_structure(state, suggestion, cfg)
             if struct_reason:
-                logger.info("HEDGE STRUCTURE BLOCKED: %s — %s", suggestion.strategy.value, struct_reason)
+                logger.info("ATLAS STRUCTURE BLOCKED: %s — %s", suggestion.strategy.value, struct_reason)
                 continue
 
             # Skip duplicates
@@ -1434,10 +1415,10 @@ class HedgeAlgorithm(TradingAlgorithm):
             if state.capital_remaining <= 0:
                 break
 
-            # Hedge position sizing
-            hedge_lots, size_reject = _compute_hedge_lots(suggestion, state, cfg, is_half_size)
+            # Dynamic position sizing
+            vol_lots, size_reject = _compute_atlas_lots(suggestion, state, vol, cfg)
             if size_reject:
-                logger.info("HEDGE SIZING REJECTED: %s — %s", suggestion.strategy.value, size_reject)
+                logger.info("ATLAS SIZING REJECTED: %s — %s", suggestion.strategy.value, size_reject)
                 continue
 
             # Open position
@@ -1446,24 +1427,24 @@ class HedgeAlgorithm(TradingAlgorithm):
                 expiry=chain.expiry,
                 technicals=technicals, analytics=analytics, chain=chain,
             )
-            # Override lots with hedge sizing
-            if hedge_lots > 0 and hedge_lots != position.lots:
-                position = position.model_copy(update={"lots": hedge_lots})
+            if vol_lots > 0 and vol_lots != position.lots:
+                position = position.model_copy(update={"lots": vol_lots})
 
             position = position.model_copy(update={
                 "entry_date": _now_ist().strftime("%Y-%m-%d"),
             })
 
             logger.info(
-                "HEDGE OPENED: %s | lots=%d | margin=%.0f | premium=%.2f",
-                position.strategy, position.lots, position.margin_required, position.net_premium,
+                "ATLAS OPENED: %s | lots=%d | margin=%.0f | premium=%.2f | regime=%s",
+                position.strategy, position.lots, position.margin_required,
+                position.net_premium, regime,
             )
 
             # Update allocation tracker
             tracker = dict(state.allocation_tracker or {})
-            if suggestion.strategy in _HEDGE_PRIMARY:
+            if suggestion.strategy in _ATLAS_PRIMARY:
                 tracker["primary_used"] = tracker.get("primary_used", 0.0) + position.margin_required
-            elif suggestion.strategy in _HEDGE_SECONDARY:
+            elif suggestion.strategy in _ATLAS_SECONDARY:
                 tracker["secondary_used"] = tracker.get("secondary_used", 0.0) + position.margin_required
 
             state = state.model_copy(update={

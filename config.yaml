@@ -186,9 +186,9 @@ algorithms:
   sentinel:
     enabled: true
     display_name: "V1 Sentinel"
-  hedge:
+  optimus:
     enabled: true
-    display_name: "V3 Hedge"
+    display_name: "V3 Optimus"
     # Capital
     initial_capital: 2500000
     lot_size: 75
@@ -247,9 +247,9 @@ algorithms:
     post_fill_max_rr: 2.0
     # Section 8 — Portfolio
     max_open_positions: 4
-  institutional:
+  jarvis:
     enabled: true
-    display_name: "V2 Institutional"
+    display_name: "V2 Jarvis"
     # Risk limits
     max_capital_risk_per_trade_pct: 1.0      # 1% of account per trade
     max_margin_utilization_pct: 30.0
@@ -286,9 +286,9 @@ algorithms:
     consecutive_loss_halt: 3
     # Execution
     slippage_per_leg: 0.05                   # ₹0.05 per leg (1 tick)
-  vol_optimized:
+  atlas:
     enabled: true
-    display_name: "V4 Vol-Optimized"
+    display_name: "V4 Atlas"
     # Capital
     initial_capital: 2500000
     lot_size: 75

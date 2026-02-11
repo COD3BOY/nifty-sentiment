@@ -19,7 +19,7 @@ def discover_algorithms() -> None:
     """Import all algorithm modules to trigger @register_algorithm decorators."""
     from algorithms import (  # noqa: F401
         sentinel,
-        institutional,
-        hedge,
-        vol_optimized,
+        jarvis,
+        optimus,
+        atlas,
     )

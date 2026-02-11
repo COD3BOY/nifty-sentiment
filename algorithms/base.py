@@ -20,7 +20,7 @@ class TradingAlgorithm(ABC):
     and produces trade suggestions + manages positions independently.
     """
 
-    name: str  # unique ID, e.g. "sentinel", "institutional"
+    name: str  # unique ID, e.g. "sentinel", "jarvis"
     display_name: str  # UI label, e.g. "V1 Sentinel"
     description: str  # one-liner
 

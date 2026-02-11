@@ -137,13 +137,13 @@ class PaperTradingState(BaseModel):
     consecutive_losses: int = 0
     peak_capital: float = 0.0  # highest capital reached (for drawdown calc)
     trading_halted: bool = False  # set by portfolio defense rules
-    # V3 Hedge algorithm fields (backward-compatible defaults)
+    # V3 Optimus algorithm fields (backward-compatible defaults)
     weekly_start_capital: float = 0.0
     week_start_date: str = ""
     daily_start_capital: float = 0.0
     session_date: str = ""
     allocation_tracker: dict = Field(default_factory=dict)
-    # V4 Vol-Optimized algorithm fields (backward-compatible defaults)
+    # V4 Atlas algorithm fields (backward-compatible defaults)
     vol_regime: str = ""                          # "sell_premium", "buy_premium", "stand_down"
     vol_snapshot_ts: float = 0.0                  # last vol snapshot fetch timestamp
     vol_dynamic_params: dict = Field(default_factory=dict)  # current dynamic params for display

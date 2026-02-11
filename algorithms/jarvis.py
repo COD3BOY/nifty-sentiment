@@ -1,4 +1,4 @@
-"""V2 Institutional algorithm — risk-first, rule-based trading system.
+"""V2 Jarvis algorithm — risk-first, rule-based trading system.
 
 Implements all 10 master prompt sections:
   1. Strategy separation (credit vs debit)
@@ -397,7 +397,7 @@ def _check_global_gates(
 # Section 5: Position Sizing
 # ===================================================================
 
-def _compute_institutional_lots(
+def _compute_jarvis_lots(
     suggestion: TradeSuggestion,
     account_value: float,
     cfg: dict,
@@ -556,12 +556,12 @@ def _enrich_suggestion(
 # ===================================================================
 
 @register_algorithm
-class InstitutionalAlgorithm(TradingAlgorithm):
-    """V2 Institutional algorithm with strict risk management."""
+class JarvisAlgorithm(TradingAlgorithm):
+    """V2 Jarvis algorithm with strict risk management."""
 
-    name = "institutional"
-    display_name = "V2 Institutional"
-    description = "Risk-first institutional rules with strict RR, liquidity, and portfolio defense"
+    name = "jarvis"
+    display_name = "V2 Jarvis"
+    description = "Risk-first rules with strict RR, liquidity, and portfolio defense"
 
     # ---------------------------------------------------------------
     # generate_suggestions — Sections 1, 3, 4, 6, 7, 9
@@ -573,9 +573,9 @@ class InstitutionalAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
     ) -> list[TradeSuggestion]:
-        """Generate and validate suggestions using institutional rules.
+        """Generate and validate suggestions using Jarvis rules.
 
-        Uses V1's base suggestions, then applies institutional filters.
+        Uses V1's base suggestions, then applies Jarvis filters.
         """
         # Start from V1's raw suggestions as candidates
         from core.trade_strategies import generate_trade_suggestions
@@ -810,22 +810,22 @@ class InstitutionalAlgorithm(TradingAlgorithm):
 
             # Section 5: Position sizing
             account_value = state.initial_capital + state.net_realized_pnl
-            inst_lots, size_reject = _compute_institutional_lots(
+            jarvis_lots, size_reject = _compute_jarvis_lots(
                 suggestion, account_value, cfg, state.consecutive_losses,
             )
             if size_reject:
                 logger.info("V2 SIZING REJECTED: %s — %s", suggestion.strategy.value, size_reject)
                 continue
 
-            # Open position using the institutional lot count
+            # Open position using the Jarvis lot count
             position = open_position(
                 suggestion, lot_size, state.capital_remaining,
                 expiry=chain.expiry,
                 technicals=technicals, analytics=analytics, chain=chain,
             )
-            # Override lots if institutional sizing differs
-            if inst_lots > 0 and inst_lots != position.lots:
-                position = position.model_copy(update={"lots": inst_lots})
+            # Override lots if Jarvis sizing differs
+            if jarvis_lots > 0 and jarvis_lots != position.lots:
+                position = position.model_copy(update={"lots": jarvis_lots})
 
             # Set entry date for session tracking
             position = position.model_copy(update={

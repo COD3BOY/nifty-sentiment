@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tune V4 Vol-Optimized algorithm parameters via realized-move backtest.
+"""Tune V4 Atlas algorithm parameters via realized-move backtest.
 
 Uses historical NIFTY close + vol distribution data to find optimal
 regime thresholds and dynamic function coefficients.
@@ -10,7 +10,7 @@ Usage:
 
 Output:
     - Console summary (regime split, win rate, tuned params)
-    - data/vol_optimized_tuned_params.json
+    - data/atlas_tuned_params.json
 """
 
 from __future__ import annotations
@@ -349,7 +349,7 @@ def main() -> None:
     print(f"Score:      {regime_result.get('score', 0):.0f}")
 
     # Save to JSON
-    output_path = Path(__file__).resolve().parent.parent / "data" / "vol_optimized_tuned_params.json"
+    output_path = Path(__file__).resolve().parent.parent / "data" / "atlas_tuned_params.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(all_params, indent=2))
     print(f"\nTuned params saved to: {output_path}")
