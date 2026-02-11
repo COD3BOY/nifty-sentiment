@@ -1,23 +1,14 @@
 """Streamlit UI for the Intraday Options Desk tab."""
 
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-
-from core.indicators import (
-    compute_bollinger_bands,
-    compute_ema,
-    compute_rsi,
-    compute_supertrend,
-    compute_vwap,
-)
+from core.config import load_config
 from core.market_hours import IST, is_market_open
 from core.options_engine import OptionsDeskEngine
-from core.options_models import SignalDirection
+from core.options_models import SignalDirection, TradeSuggestion
 
 _SIGNAL_COLORS = {
     SignalDirection.BULLISH: ("#1b5e20", "#e8f5e9"),
@@ -177,52 +168,27 @@ def render_options_desk_tab() -> None:
     # ================================================================
     st.divider()
     st.subheader("Suggested Trades")
-    if snap.trade_suggestions:
-        _render_trade_suggestions(snap.trade_suggestions)
+
+    is_warmup, entry_time, secs_remaining = _is_warmup_period()
+    if is_warmup:
+        _render_warmup_view(snap, secs_remaining, entry_time)
     else:
-        if snap.chain and snap.chain.strikes:
-            st.info("No trade strategies met the minimum score threshold.")
-        elif snap.errors:
-            st.warning("Trade strategies require live option chain data from NSE, which is currently unavailable.")
+        # Get top high-confidence suggestion per algorithm from session state
+        from algorithms import get_algorithm_registry
+        registry = get_algorithm_registry()
+        algo_suggestions = st.session_state.get("algo_suggestions", {})
+
+        top_trades: list[tuple[str, TradeSuggestion]] = []
+        for algo_name, suggestions in algo_suggestions.items():
+            high = [s for s in suggestions if s.confidence == "High" and not s.rejection_reason]
+            if high:
+                display_name = registry[algo_name].display_name if algo_name in registry else algo_name
+                top_trades.append((display_name, high[0]))
+
+        if top_trades:
+            _render_algo_trade_suggestions(top_trades)
         else:
-            st.info("Trade strategies will appear here during market hours when live option chain data is available.")
-
-    # ================================================================
-    # OPTION CHAIN SNAPSHOT (row 2)
-    # ================================================================
-    st.divider()
-    st.subheader("Option Chain Snapshot")
-
-    col_chart, col_levels = st.columns([2, 1])
-
-    with col_chart:
-        if snap.chain and snap.chain.strikes and anl:
-            _render_oi_chart(snap, anl)
-        else:
-            st.caption("Option chain data unavailable — NSE may be blocking automated requests")
-
-    with col_levels:
-        if anl and anl.max_pain > 0:
-            st.markdown("**Key Levels**")
-            st.metric("Max Pain", f"{anl.max_pain:,.0f}")
-            st.metric("Support (Max Put OI)", f"{anl.support_strike:,.0f}", delta=f"OI: {anl.support_oi:,.0f}")
-            st.metric("Resistance (Max Call OI)", f"{anl.resistance_strike:,.0f}", delta=f"OI: {anl.resistance_oi:,.0f}")
-            if tech:
-                st.metric("Spot vs Max Pain", f"{tech.spot - anl.max_pain:+,.0f} pts")
-        else:
-            st.caption("Option chain data unavailable — key levels require live OI data from NSE")
-
-    # ================================================================
-    # TECHNICAL CHART (row 3)
-    # ================================================================
-    st.divider()
-    st.subheader("Technical Chart (5-min)")
-
-    df = engine.get_candle_dataframe()
-    if df is not None and not df.empty:
-        _render_technical_chart(df, tech)
-    else:
-        st.caption("Candle data unavailable")
+            st.info("No high-confidence trades from any algorithm at this time.")
 
     # ================================================================
     # EXPANDABLE DETAILS (row 4)
@@ -244,24 +210,104 @@ _CONFIDENCE_BADGE = {
 }
 
 
-def _render_trade_suggestions(suggestions: list) -> None:
-    """Render top trade suggestions in a 2x2 card grid."""
-    # 2x2 grid
-    for row_start in range(0, len(suggestions), 2):
+def _is_warmup_period() -> tuple[bool, str, int]:
+    """Check whether we are in the warmup window (market open to entry_start_time).
+
+    Returns (is_warmup, entry_time_str, seconds_remaining).
+    is_warmup is False when the market is closed.
+    """
+    cfg = load_config().get("paper_trading", {})
+    entry_time_str = cfg.get("entry_start_time", "10:00")
+    h, m = (int(x) for x in entry_time_str.split(":"))
+    entry_time = dt_time(h, m)
+
+    now = datetime.now(IST)
+    # Not a trading day or outside market hours → not warmup
+    if now.weekday() >= 5 or now.time() > dt_time(15, 30) or now.time() < dt_time(9, 15):
+        return False, entry_time_str, 0
+
+    if now.time() < entry_time:
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        secs = int((target - now).total_seconds())
+        return True, entry_time_str, max(secs, 0)
+
+    return False, entry_time_str, 0
+
+
+def _render_warmup_view(snap, seconds_remaining: int, entry_time: str) -> None:
+    """Show warmup UI during the observation period (9:15 to entry_start_time)."""
+    mins, secs = divmod(seconds_remaining, 60)
+    st.info(f"Warming up — suggestions will appear at **{entry_time} IST** (in {mins}m {secs}s)")
+
+    # Live indicator snapshot
+    tech = snap.technicals
+    anl = snap.analytics
+    if tech:
+        st.markdown("**Live Indicators**")
+        ind_cols = st.columns(5)
+        with ind_cols[0]:
+            st.metric("RSI", f"{tech.rsi:.1f}")
+        with ind_cols[1]:
+            st_dir = "Bullish" if tech.supertrend_direction == 1 else "Bearish"
+            st.metric("Supertrend", st_dir)
+        with ind_cols[2]:
+            dist = ((tech.spot - tech.vwap) / tech.vwap * 100) if tech.vwap else 0
+            st.metric("Spot vs VWAP", f"{dist:+.2f}%")
+        with ind_cols[3]:
+            bb_w = ((tech.bb_upper - tech.bb_lower) / tech.bb_middle * 100) if tech.bb_middle else 0
+            st.metric("BB Width", f"{bb_w:.2f}%")
+        with ind_cols[4]:
+            if tech.ema_9 > tech.ema_21 > tech.ema_50:
+                trend = "Bullish"
+            elif tech.ema_9 < tech.ema_21 < tech.ema_50:
+                trend = "Bearish"
+            else:
+                trend = "Mixed"
+            st.metric("EMA Trend", trend)
+
+    # Per-algorithm candidate preview
+    algo_suggestions = st.session_state.get("algo_suggestions", {})
+    if algo_suggestions:
+        from algorithms import get_algorithm_registry
+        registry = get_algorithm_registry()
+
+        st.markdown("**Algorithm Candidates (preview)**")
+        preview_cols = st.columns(len(algo_suggestions))
+        for idx, (algo_name, suggestions) in enumerate(algo_suggestions.items()):
+            with preview_cols[idx]:
+                display = registry[algo_name].display_name if algo_name in registry else algo_name
+                high = sum(1 for s in suggestions if s.confidence == "High" and not s.rejection_reason)
+                med = sum(1 for s in suggestions if s.confidence == "Medium" and not s.rejection_reason)
+                low = sum(1 for s in suggestions if s.confidence == "Low" and not s.rejection_reason)
+                st.markdown(f"**{display}**")
+                st.caption(f"{len(suggestions)} candidates: {high}H / {med}M / {low}L")
+                # Show leading strategy preview
+                viable = [s for s in suggestions if not s.rejection_reason]
+                if viable:
+                    best = max(viable, key=lambda s: s.score)
+                    st.caption(f"Leading: {best.strategy.value} ({best.direction_bias}, score {best.score:.0f})")
+
+
+def _render_algo_trade_suggestions(top_trades: list[tuple[str, TradeSuggestion]]) -> None:
+    """Render one high-confidence trade card per algorithm."""
+    for row_start in range(0, len(top_trades), 2):
         cols = st.columns(2)
-        for col_idx, s_idx in enumerate(range(row_start, min(row_start + 2, len(suggestions)))):
-            s = suggestions[s_idx]
+        for col_idx, t_idx in enumerate(range(row_start, min(row_start + 2, len(top_trades)))):
+            display_name, s = top_trades[t_idx]
             fg, bg = _BIAS_COLORS.get(s.direction_bias, ("#616161", "#f5f5f5"))
             confidence = _CONFIDENCE_BADGE.get(s.confidence, s.confidence)
 
             with cols[col_idx]:
-                # Card header
+                # Card header with algorithm badge
                 st.markdown(
                     f'<div style="background:{bg}; border-left:4px solid {fg}; '
-                    f'padding:14px; border-radius:8px; margin-bottom:4px;">'
+                    f'padding:14px; border-radius:8px; margin-bottom:4px; position:relative;">'
+                    f'<span style="position:absolute; top:8px; right:12px; background:{fg}; '
+                    f'color:white; padding:2px 8px; border-radius:4px; font-size:0.75em;">'
+                    f'{display_name}</span>'
                     f'<strong style="color:{fg}; font-size:1.15em;">{s.strategy.value}</strong>'
                     f'<br><span style="color:{fg}; font-size:0.9em;">'
-                    f'{s.direction_bias} &bull; {confidence}</span></div>',
+                    f'{s.direction_bias} &bull; {confidence} &bull; Score {s.score:.0f}</span></div>',
                     unsafe_allow_html=True,
                 )
 
@@ -306,128 +352,6 @@ def _render_trade_suggestions(suggestions: list) -> None:
                     st.markdown("**Technicals to watch:**")
                     for c in s.technicals_to_check:
                         st.markdown(f"- {c}")
-
-
-def _render_oi_chart(snap, anl) -> None:
-    """Horizontal OI bar chart — Call OI left, Put OI right, ~15 strikes around ATM."""
-    chain = snap.chain
-    atm = anl.atm_strike
-    sorted_strikes = sorted(chain.strikes, key=lambda s: s.strike_price)
-
-    # Find ATM index and take ~7 on each side
-    atm_idx = 0
-    for i, s in enumerate(sorted_strikes):
-        if s.strike_price == atm:
-            atm_idx = i
-            break
-
-    start = max(0, atm_idx - 7)
-    end = min(len(sorted_strikes), atm_idx + 8)
-    subset = sorted_strikes[start:end]
-
-    strike_labels = [str(int(s.strike_price)) for s in subset]
-    ce_oi = [-s.ce_oi for s in subset]  # negative for left side
-    pe_oi = [s.pe_oi for s in subset]
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        y=strike_labels, x=ce_oi, orientation="h",
-        name="Call OI", marker_color="#ef5350",
-        text=[f"{abs(v):,.0f}" for v in ce_oi], textposition="outside",
-    ))
-    fig.add_trace(go.Bar(
-        y=strike_labels, x=pe_oi, orientation="h",
-        name="Put OI", marker_color="#66bb6a",
-        text=[f"{v:,.0f}" for v in pe_oi], textposition="outside",
-    ))
-    fig.update_layout(
-        barmode="overlay",
-        height=400,
-        margin=dict(t=30, b=30, l=60, r=60),
-        xaxis_title="Open Interest",
-        yaxis_title="Strike",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def _render_technical_chart(df, tech) -> None:
-    """Plotly candlestick with EMAs, Supertrend, Bollinger Bands + RSI subplot."""
-    close = df["Close"]
-
-    ema9 = compute_ema(close, 9)
-    ema21 = compute_ema(close, 21)
-    ema50 = compute_ema(close, 50)
-    st_vals, st_dirs = compute_supertrend(df)
-    bb_upper, bb_mid, bb_lower = compute_bollinger_bands(close)
-    rsi = compute_rsi(close)
-
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        row_heights=[0.75, 0.25], vertical_spacing=0.03,
-    )
-
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df["Open"], high=df["High"],
-        low=df["Low"], close=df["Close"], name="NIFTY",
-        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-    ), row=1, col=1)
-
-    # EMAs
-    for ema, name, color in [
-        (ema9, "EMA 9", "#ff9800"),
-        (ema21, "EMA 21", "#2196f3"),
-        (ema50, "EMA 50", "#9c27b0"),
-    ]:
-        fig.add_trace(go.Scatter(
-            x=df.index, y=ema, name=name, line=dict(color=color, width=1),
-        ), row=1, col=1)
-
-    # Supertrend (colored by direction) — replace zeros with NaN to avoid Y-axis distortion
-    import numpy as np
-    st_vals = st_vals.replace(0, np.nan)
-    bull_st = st_vals.where(st_dirs == 1)
-    bear_st = st_vals.where(st_dirs == -1)
-    fig.add_trace(go.Scatter(
-        x=df.index, y=bull_st, name="Supertrend Bull",
-        line=dict(color="#4caf50", width=1.5, dash="dot"),
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=df.index, y=bear_st, name="Supertrend Bear",
-        line=dict(color="#f44336", width=1.5, dash="dot"),
-    ), row=1, col=1)
-
-    # Bollinger Bands
-    fig.add_trace(go.Scatter(
-        x=df.index, y=bb_upper, name="BB Upper",
-        line=dict(color="#90a4ae", width=0.8, dash="dash"),
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=df.index, y=bb_lower, name="BB Lower",
-        line=dict(color="#90a4ae", width=0.8, dash="dash"),
-        fill="tonexty", fillcolor="rgba(144,164,174,0.08)",
-    ), row=1, col=1)
-
-    # RSI subplot
-    fig.add_trace(go.Scatter(
-        x=df.index, y=rsi, name="RSI",
-        line=dict(color="#7e57c2", width=1.5),
-    ), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="#ef5350", opacity=0.5, row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#4caf50", opacity=0.5, row=2, col=1)
-    fig.add_hrect(y0=30, y1=70, fillcolor="rgba(158,158,158,0.05)", line_width=0, row=2, col=1)
-
-    fig.update_layout(
-        height=600,
-        margin=dict(t=30, b=30, l=50, r=30),
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font_size=10),
-    )
-    fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
-
-    st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_expandable_details(snap) -> None:

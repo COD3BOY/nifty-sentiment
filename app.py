@@ -415,29 +415,35 @@ from ui.paper_trading_tab import render_paper_trading_tab
 
 snap = st.session_state.get("options_snapshot")
 
+# Pre-compute all algorithm suggestions (shared with Options Desk tab)
+algo_suggestions_map: dict[str, list] = {}
+algo_instances_map = {}
+for algo_name in _enabled_algos:
+    algo_cls = _algo_registry[algo_name]
+    algo_instance = algo_cls(config=_algo_cfg.get(algo_name, {}))
+    algo_instances_map[algo_name] = algo_instance
+    if snap and snap.chain and snap.technicals and snap.analytics:
+        try:
+            algo_suggestions_map[algo_name] = algo_instance.generate_suggestions(
+                snap.chain, snap.technicals, snap.analytics,
+            )
+        except Exception:
+            algo_suggestions_map[algo_name] = []
+    else:
+        algo_suggestions_map[algo_name] = []
+
+st.session_state.algo_suggestions = algo_suggestions_map
+
 for algo_tab, algo_name in zip(algo_tabs, _enabled_algos):
     with algo_tab:
-        algo_cls = _algo_registry[algo_name]
-        algo_instance = algo_cls(config=_algo_cfg.get(algo_name, {}))
-
-        # Generate algorithm-specific suggestions if data is available
-        algo_suggestions = None
-        if snap and snap.chain and snap.technicals and snap.analytics:
-            try:
-                algo_suggestions = algo_instance.generate_suggestions(
-                    snap.chain, snap.technicals, snap.analytics,
-                )
-            except Exception as _exc:
-                st.warning(f"Suggestion generation failed for {algo_cls.display_name}: {_exc}")
-
         render_paper_trading_tab(
-            suggestions=algo_suggestions,
+            suggestions=algo_suggestions_map.get(algo_name),
             chain=snap.chain if snap else None,
             technicals=snap.technicals if snap else None,
             analytics=snap.analytics if snap else None,
             algo_name=algo_name,
-            algo_display_name=algo_cls.display_name,
-            evaluate_fn=algo_instance.evaluate_and_manage,
+            algo_display_name=_algo_registry[algo_name].display_name,
+            evaluate_fn=algo_instances_map[algo_name].evaluate_and_manage,
         )
 
 # ============================================================
