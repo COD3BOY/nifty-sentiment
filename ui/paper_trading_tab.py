@@ -582,8 +582,9 @@ def _process_pending_critique(state: PaperTradingState) -> PaperTradingState:
         critique = criticize_trade(record, recent_performance=recent)
         db.save_critique(critique, trade_record_dict=record.model_dump(mode="json"))
         logger.info("Critique saved for trade %s: grade=%s", trade_id, critique.overall_grade)
-    except Exception:
+    except Exception as exc:
         logger.warning("Failed to critique trade %s", trade_id, exc_info=True)
+        st.error(f"Critique failed for trade {trade_id[:8]}: {exc}")
 
     # Pop from queue regardless of success/failure
     state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
