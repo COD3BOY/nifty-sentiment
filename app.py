@@ -443,6 +443,7 @@ for algo_tab, algo_name in zip(algo_tabs, _enabled_algos):
             analytics=snap.analytics if snap else None,
             algo_name=algo_name,
             algo_display_name=_algo_registry[algo_name].display_name,
+            algo_description=_algo_registry[algo_name].description,
             evaluate_fn=algo_instances_map[algo_name].evaluate_and_manage,
         )
 

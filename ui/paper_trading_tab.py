@@ -119,6 +119,7 @@ def render_paper_trading_tab(
     analytics: OptionsAnalytics | None = None,
     algo_name: str = "sentinel",
     algo_display_name: str = "Paper Trading",
+    algo_description: str = "",
     evaluate_fn=None,
 ) -> None:
     """Main entry point for the Paper Trading tab.
@@ -127,6 +128,7 @@ def render_paper_trading_tab(
     ----------
     algo_name : unique algorithm identifier (used for state persistence and widget keys)
     algo_display_name : UI label shown in header
+    algo_description : short summary of the algorithm's strategy
     evaluate_fn : optional override for evaluate_and_manage (algorithm's own implementation)
     """
     state = _get_state(algo_name)
@@ -135,7 +137,7 @@ def render_paper_trading_tab(
     h1, h2 = st.columns([4, 1.5])
     with h1:
         st.title(algo_display_name)
-        st.caption("Simulated trading using Options Desk suggestions with auto stop-loss and profit targets")
+        st.caption(algo_description or "Simulated trading with auto stop-loss and profit targets")
     with h2:
         auto_trading = st.toggle(
             "Auto-Trading",
