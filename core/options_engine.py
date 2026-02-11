@@ -14,6 +14,7 @@ from core.indicators import (
 )
 from core.intraday_fetcher import IntradayCandleFetcher
 from core.nse_fetcher import KiteOptionChainFetcher
+from core.greeks import compute_chain_deltas
 from core.options_analytics import build_analytics
 from core.options_models import (
     OptionChainData,
@@ -55,6 +56,35 @@ class OptionsDeskEngine:
             if not chain.strikes:
                 raise ValueError("Kite returned empty data")
             analytics = build_analytics(chain)
+
+            # Compute greeks (delta) for all strikes with IV
+            if chain.expiry:
+                from datetime import date as _date, datetime as _dt
+                try:
+                    expiry_date = _dt.strptime(chain.expiry, "%d-%b-%Y").date()
+                    calendar_days = (expiry_date - _date.today()).days
+                    T = max(calendar_days / 365.0, 0.5 / 365.0)
+                    iv_cfg = self._cfg.get("iv_calculator", {})
+                    rfr = iv_cfg.get("risk_free_rate", 0.065)
+                    chain = chain.model_copy(
+                        update={"strikes": compute_chain_deltas(chain, T, risk_free_rate=rfr)}
+                    )
+                except ValueError:
+                    logger.warning("Could not parse expiry date for delta computation")
+
+            # Save IV reading and compute IV percentile
+            if analytics.atm_iv > 0:
+                try:
+                    from core.database import SentimentDatabase
+                    from core.iv_history import get_iv_percentile, save_iv_reading
+                    db = SentimentDatabase()
+                    save_iv_reading(db, self._symbol, analytics.atm_iv)
+                    analytics = analytics.model_copy(
+                        update={"iv_percentile": get_iv_percentile(db, self._symbol, analytics.atm_iv)}
+                    )
+                except Exception as iv_exc:
+                    logger.warning("IV history update failed: %s", iv_exc)
+
             logger.info("Option chain loaded via Kite Connect (%d strikes)", len(chain.strikes))
         except Exception as exc:
             logger.error("Option chain fetch failed: %s", exc)
@@ -130,6 +160,7 @@ class OptionsDeskEngine:
 
         vwap = compute_vwap(df)
         ema9 = compute_ema(close, span=ind_cfg.get("ema_fast", 9))
+        ema20 = compute_ema(close, span=20)
         ema21 = compute_ema(close, span=ind_cfg.get("ema_mid", 21))
         ema50 = compute_ema(close, span=ind_cfg.get("ema_slow", 50))
         rsi = compute_rsi(close, period=ind_cfg.get("rsi_period", 9))
@@ -164,6 +195,7 @@ class OptionsDeskEngine:
             spot_change_pct=float(spot_change_pct),
             vwap=float(vwap.iloc[-1]),
             ema_9=float(ema9.iloc[-1]),
+            ema_20=float(ema20.iloc[-1]),
             ema_21=float(ema21.iloc[-1]),
             ema_50=float(ema50.iloc[-1]),
             rsi=float(rsi.iloc[-1]),

@@ -97,6 +97,16 @@ class TradeCritiqueRow(Base):
     full_trade_data = Column(Text, default="{}")
 
 
+class IVHistoryRow(Base):
+    __tablename__ = "iv_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    atm_iv = Column(Float, nullable=False)
+    vix = Column(Float, nullable=True)
+
+
 class ParameterAdjustmentRow(Base):
     __tablename__ = "parameter_adjustments"
 

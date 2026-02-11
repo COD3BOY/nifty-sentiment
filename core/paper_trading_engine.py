@@ -718,6 +718,22 @@ def evaluate_and_manage(
         return state
 
     # --- Phase 2: Open new positions ---
+    # Trading window guard — only open trades during allowed hours
+    entry_start_time = cfg.get("entry_start_time", "10:00")
+    entry_cutoff_time = cfg.get("entry_cutoff_time", "15:10")
+    now = _now_ist()
+    sh, sm = (int(x) for x in entry_start_time.split(":"))
+    ch, cm = (int(x) for x in entry_cutoff_time.split(":"))
+    if now.time() < time(sh, sm):
+        logger.info(
+            "Warmup period: %s IST < %s — collecting data, no trades yet",
+            now.strftime('%H:%M'), entry_start_time,
+        )
+        return state
+    if now.time() >= time(ch, cm):
+        logger.info("Entry cutoff: %s IST >= %s — blocking new trades", now.strftime('%H:%M'), entry_cutoff_time)
+        return state
+
     # Daily loss circuit breaker
     daily_loss_limit_pct = cfg.get("daily_loss_limit_pct", 3.0)
     session_pnl = (state.initial_capital + state.net_realized_pnl) - state.session_start_capital
@@ -744,8 +760,12 @@ def evaluate_and_manage(
             )
             return state
 
-        # Track held strategy types to avoid duplicates
+        # Track held strategy types — include today's closed trades to prevent re-entry
         held_strategies = {p.strategy for p in state.open_positions}
+        today = _now_ist().date()
+        for record in state.trade_log:
+            if record.entry_time.date() == today:
+                held_strategies.add(record.strategy)
 
         # Portfolio concentration limits
         max_open = cfg.get("max_open_positions", 3)
@@ -810,19 +830,33 @@ def evaluate_and_manage(
 # Persistence
 # ---------------------------------------------------------------------------
 
-_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "paper_trading_state.json"
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
-def save_state(state: PaperTradingState) -> None:
+def _state_file(algo_name: str = "sentinel") -> Path:
+    """Return the state file path for a given algorithm."""
+    return _DATA_DIR / f"paper_trading_state_{algo_name}.json"
+
+
+def save_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
     """Persist paper trading state to disk (atomic write)."""
-    _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _STATE_FILE.with_suffix(".tmp")
+    path = _state_file(algo_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(state.model_dump_json(indent=2))
-    tmp.replace(_STATE_FILE)  # atomic on POSIX
+    tmp.replace(path)  # atomic on POSIX
 
 
-def load_state() -> PaperTradingState | None:
+def load_state(algo_name: str = "sentinel") -> PaperTradingState | None:
     """Load paper trading state from disk. Returns None if no saved state."""
-    if _STATE_FILE.exists():
-        return PaperTradingState.model_validate_json(_STATE_FILE.read_text())
+    path = _state_file(algo_name)
+
+    # One-time migration: old unparameterized file -> sentinel
+    if not path.exists() and algo_name == "sentinel":
+        legacy = _DATA_DIR / "paper_trading_state.json"
+        if legacy.exists():
+            legacy.rename(path)
+
+    if path.exists():
+        return PaperTradingState.model_validate_json(path.read_text())
     return None

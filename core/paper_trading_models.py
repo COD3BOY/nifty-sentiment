@@ -81,6 +81,8 @@ class PaperPosition(BaseModel):
     entry_context: dict | None = None  # serialized MarketContextSnapshot
     peak_pnl: float = 0.0      # best unrealized PnL during hold
     trough_pnl: float = 0.0    # worst unrealized PnL during hold
+    sessions_held: int = 0     # number of trading sessions position has been held
+    entry_date: str | None = None  # date string when position was opened
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -131,6 +133,10 @@ class PaperTradingState(BaseModel):
     last_trade_opened_ts: float = 0.0  # cooldown between successive trade opens
     pending_critiques: list[str] = Field(default_factory=list)  # trade IDs awaiting critique
     session_start_capital: float = 0.0  # capital at start of trading day (set on first cycle)
+    # V2 Institutional algorithm fields (backward-compatible defaults)
+    consecutive_losses: int = 0
+    peak_capital: float = 0.0  # highest capital reached (for drawdown calc)
+    trading_halted: bool = False  # set by portfolio defense rules
 
     @model_validator(mode="before")
     @classmethod
@@ -174,3 +180,47 @@ class PaperTradingState(BaseModel):
             return 0.0
         wins = sum(1 for t in self.trade_log if t.realized_pnl > 0)
         return (wins / len(self.trade_log)) * 100
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def avg_risk_reward(self) -> float:
+        """Average risk:reward across closed trades."""
+        if not self.trade_log:
+            return 0.0
+        ratios = []
+        for t in self.trade_log:
+            if t.stop_loss_amount > 0 and t.profit_target_amount > 0:
+                ratios.append(t.stop_loss_amount / t.profit_target_amount)
+        return sum(ratios) / len(ratios) if ratios else 0.0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def max_drawdown_pct(self) -> float:
+        """Maximum drawdown as percentage of peak capital."""
+        if not self.trade_log:
+            return 0.0
+        running = self.initial_capital
+        peak = running
+        max_dd = 0.0
+        for t in self.trade_log:
+            running += t.net_pnl
+            if running > peak:
+                peak = running
+            dd = (peak - running) / peak * 100 if peak > 0 else 0.0
+            if dd > max_dd:
+                max_dd = dd
+        return round(max_dd, 2)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def sharpe_ratio(self) -> float:
+        """Simplified Sharpe ratio (mean return / std dev of returns)."""
+        if len(self.trade_log) < 2:
+            return 0.0
+        returns = [t.net_pnl for t in self.trade_log]
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+        std_r = variance ** 0.5
+        if std_r == 0:
+            return 0.0
+        return round(mean_r / std_r, 2)

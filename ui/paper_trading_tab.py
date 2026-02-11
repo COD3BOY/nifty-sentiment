@@ -38,24 +38,29 @@ def _fmt_time(dt: datetime) -> str:
     return _to_ist(dt).strftime("%H:%M:%S")
 
 
-def _get_state() -> PaperTradingState:
+def _state_key(algo_name: str) -> str:
+    return f"paper_trading_state_{algo_name}"
+
+
+def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
     """Get or initialize paper trading state from session_state."""
-    if "paper_trading_state" not in st.session_state:
-        saved = load_state()
+    key = _state_key(algo_name)
+    if key not in st.session_state:
+        saved = load_state(algo_name=algo_name)
         if saved is not None:
-            st.session_state.paper_trading_state = saved
+            st.session_state[key] = saved
         else:
             cfg = load_config().get("paper_trading", {})
-            st.session_state.paper_trading_state = PaperTradingState(
+            st.session_state[key] = PaperTradingState(
                 initial_capital=cfg.get("initial_capital", 100_000),
                 is_auto_trading=cfg.get("auto_execute", True),
             )
-    return st.session_state.paper_trading_state
+    return st.session_state[key]
 
 
-def _set_state(state: PaperTradingState) -> None:
-    st.session_state.paper_trading_state = state
-    save_state(state)
+def _set_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
+    st.session_state[_state_key(algo_name)] = state
+    save_state(state, algo_name=algo_name)
 
 
 def _format_context_indicators(ctx: dict) -> list[str]:
@@ -103,31 +108,41 @@ def render_paper_trading_tab(
     chain: OptionChainData | None,
     technicals: TechnicalIndicators | None = None,
     analytics: OptionsAnalytics | None = None,
+    algo_name: str = "sentinel",
+    algo_display_name: str = "Paper Trading",
+    evaluate_fn=None,
 ) -> None:
-    """Main entry point for the Paper Trading tab."""
-    state = _get_state()
+    """Main entry point for the Paper Trading tab.
+
+    Parameters
+    ----------
+    algo_name : unique algorithm identifier (used for state persistence and widget keys)
+    algo_display_name : UI label shown in header
+    evaluate_fn : optional override for evaluate_and_manage (algorithm's own implementation)
+    """
+    state = _get_state(algo_name)
 
     # --- Header row (render before engine so reset takes effect first) ---
     h1, h2 = st.columns([4, 1.5])
     with h1:
-        st.title("Paper Trading")
+        st.title(algo_display_name)
         st.caption("Simulated trading using Options Desk suggestions with auto stop-loss and profit targets")
     with h2:
         auto_trading = st.toggle(
             "Auto-Trading",
             value=state.is_auto_trading,
-            key="paper_auto_trading_toggle",
+            key=f"paper_auto_trading_toggle_{algo_name}",
         )
         if auto_trading != state.is_auto_trading:
             state = state.model_copy(update={"is_auto_trading": auto_trading})
-            _set_state(state)
-        if st.button("Reset Session", key="paper_reset_btn", type="secondary"):
+            _set_state(state, algo_name)
+        if st.button("Reset Session", key=f"paper_reset_btn_{algo_name}", type="secondary"):
             cfg = load_config().get("paper_trading", {})
             fresh = PaperTradingState(
                 initial_capital=cfg.get("initial_capital", 100_000),
                 is_auto_trading=cfg.get("auto_execute", True),
             )
-            _set_state(fresh)
+            _set_state(fresh, algo_name)
             _clear_critiques_db()
             st.rerun()
 
@@ -136,16 +151,17 @@ def render_paper_trading_tab(
     lot_size = cfg.get("lot_size", 25)
     refresh_ts = st.session_state.get("options_last_refresh", 0.0)
 
-    new_state = evaluate_and_manage(
+    _eval_fn = evaluate_fn or evaluate_and_manage
+    new_state = _eval_fn(
         state, suggestions, chain,
         technicals=technicals, analytics=analytics,
         lot_size=lot_size, refresh_ts=refresh_ts,
     )
-    _set_state(new_state)
+    _set_state(new_state, algo_name)
     state = new_state
 
     # --- Process one pending critique per cycle (non-blocking) ---
-    state = _process_pending_critique(state)
+    state = _process_pending_critique(state, algo_name)
 
     st.divider()
 
@@ -191,7 +207,7 @@ def render_paper_trading_tab(
         with hdr_col:
             st.subheader(f"Open Positions ({len(open_pos)})")
         with btn_col:
-            if len(open_pos) > 1 and st.button("Close All", key="close_all_btn", type="secondary", use_container_width=True):
+            if len(open_pos) > 1 and st.button("Close All", key=f"close_all_btn_{algo_name}", type="secondary", use_container_width=True):
                 new_records = []
                 added_realized = 0.0
                 added_costs = 0.0
@@ -216,10 +232,10 @@ def render_paper_trading_tab(
                         "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
-                _set_state(new_state)
+                _set_state(new_state, algo_name)
                 st.rerun()
         for pos in open_pos:
-            _render_open_position_card(state, pos, technicals=technicals, analytics=analytics, chain=chain)
+            _render_open_position_card(state, pos, technicals=technicals, analytics=analytics, chain=chain, algo_name=algo_name)
     else:
         if state.is_auto_trading:
             st.info("No open positions. Auto-trading is ON — new positions will open on the next Options Desk refresh.")
@@ -289,6 +305,7 @@ def _render_open_position_card(
     technicals: TechnicalIndicators | None = None,
     analytics: OptionsAnalytics | None = None,
     chain: OptionChainData | None = None,
+    algo_name: str = "sentinel",
 ) -> None:
     """Render a single open position as an expander card."""
     pnl = pos.total_unrealized_pnl
@@ -339,7 +356,7 @@ def _render_open_position_card(
                 unsafe_allow_html=True,
             )
         with btn_col:
-            if st.button("Close", key=f"close_{pos.id}", type="secondary", use_container_width=True):
+            if st.button("Close", key=f"close_{algo_name}_{pos.id}", type="secondary", use_container_width=True):
                 _, record = close_position(
                     pos, PositionStatus.CLOSED_MANUAL,
                     technicals=technicals, analytics=analytics, chain=chain,
@@ -356,7 +373,7 @@ def _render_open_position_card(
                         "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
-                _set_state(new_state)
+                _set_state(new_state, algo_name)
                 st.rerun()
 
         # Trade economics row
@@ -555,7 +572,7 @@ _GRADE_COLORS = {
 }
 
 
-def _process_pending_critique(state: PaperTradingState) -> PaperTradingState:
+def _process_pending_critique(state: PaperTradingState, algo_name: str = "sentinel") -> PaperTradingState:
     """Process one pending critique per refresh cycle. Non-blocking."""
     crit_cfg = load_config().get("criticizer", {})
     if not crit_cfg.get("enabled", False) or not crit_cfg.get("auto_critique", True):
@@ -568,7 +585,7 @@ def _process_pending_critique(state: PaperTradingState) -> PaperTradingState:
     if not record or not record.entry_context:
         # Skip — no context to critique
         state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
-        _set_state(state)
+        _set_state(state, algo_name)
         return state
 
     try:
@@ -588,7 +605,7 @@ def _process_pending_critique(state: PaperTradingState) -> PaperTradingState:
 
     # Pop from queue regardless of success/failure
     state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
-    _set_state(state)
+    _set_state(state, algo_name)
     return state
 
 

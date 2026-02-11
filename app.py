@@ -121,11 +121,30 @@ def _live_clock_html() -> str:
 
 
 # ============================================================
+# Algorithm discovery
+# ============================================================
+from algorithms import discover_algorithms, get_algorithm_registry
+
+discover_algorithms()
+_algo_registry = get_algorithm_registry()
+_algo_cfg = config.get("algorithms", {})
+# Filter to enabled algorithms, preserving registry order
+_enabled_algos = [
+    name for name in _algo_registry
+    if _algo_cfg.get(name, {}).get("enabled", True)
+]
+
+# ============================================================
 # TABS
 # ============================================================
-tab_premarket, tab_options, tab_paper = st.tabs(
-    ["🌅 Pre-Market Analysis", "⚡ Options Desk", "📈 Paper Trading"]
-)
+_algo_tab_labels = [f"📈 {_algo_registry[n].display_name}" for n in _enabled_algos]
+_all_tab_labels = ["🌅 Pre-Market Analysis", "⚡ Options Desk"] + _algo_tab_labels
+if len(_enabled_algos) >= 2:
+    _all_tab_labels.append("📊 Comparison")
+_all_tabs = st.tabs(_all_tab_labels)
+tab_premarket, tab_options = _all_tabs[0], _all_tabs[1]
+algo_tabs = _all_tabs[2:2 + len(_enabled_algos)]
+tab_comparison = _all_tabs[-1] if len(_enabled_algos) >= 2 else None
 
 
 # ============================================================
@@ -390,15 +409,44 @@ with tab_options:
     render_options_desk_tab()
 
 # ============================================================
-# TAB 3: PAPER TRADING
+# ALGORITHM TABS (dynamic)
 # ============================================================
-with tab_paper:
-    from ui.paper_trading_tab import render_paper_trading_tab
+from ui.paper_trading_tab import render_paper_trading_tab
 
-    snap = st.session_state.get("options_snapshot")
-    render_paper_trading_tab(
-        suggestions=snap.trade_suggestions if snap else None,
-        chain=snap.chain if snap else None,
-        technicals=snap.technicals if snap else None,
-        analytics=snap.analytics if snap else None,
-    )
+snap = st.session_state.get("options_snapshot")
+
+for algo_tab, algo_name in zip(algo_tabs, _enabled_algos):
+    with algo_tab:
+        algo_cls = _algo_registry[algo_name]
+        algo_instance = algo_cls(config=_algo_cfg.get(algo_name, {}))
+
+        # Generate algorithm-specific suggestions if data is available
+        algo_suggestions = None
+        if snap and snap.chain and snap.technicals and snap.analytics:
+            try:
+                algo_suggestions = algo_instance.generate_suggestions(
+                    snap.chain, snap.technicals, snap.analytics,
+                )
+            except Exception as _exc:
+                st.warning(f"Suggestion generation failed for {algo_cls.display_name}: {_exc}")
+
+        render_paper_trading_tab(
+            suggestions=algo_suggestions,
+            chain=snap.chain if snap else None,
+            technicals=snap.technicals if snap else None,
+            analytics=snap.analytics if snap else None,
+            algo_name=algo_name,
+            algo_display_name=algo_cls.display_name,
+            evaluate_fn=algo_instance.evaluate_and_manage,
+        )
+
+# ============================================================
+# COMPARISON TAB
+# ============================================================
+if tab_comparison is not None:
+    with tab_comparison:
+        from ui.algorithm_comparison import render_algorithm_comparison
+        render_algorithm_comparison(
+            _enabled_algos,
+            {n: _algo_registry[n].display_name for n in _enabled_algos},
+        )

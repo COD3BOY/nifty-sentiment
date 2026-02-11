@@ -218,15 +218,19 @@ def _eval_short_straddle(
     reasons: list[str] = []
     checks: list[str] = []
 
-    iv_low = _p(ov, "iv_low_threshold", 15)
-    iv_mod = _p(ov, "iv_moderate_threshold", 20)
+    iv_floor = _p(ov, "iv_floor", 8.0)
+    iv_low = _p(ov, "iv_low_threshold", 12)
+    iv_sweet = _p(ov, "iv_sweet_threshold", 18)
     if analytics.atm_iv > 0:
-        if analytics.atm_iv < iv_low:
+        if analytics.atm_iv < iv_floor:
+            logger.info("Short Straddle blocked — IV %.1f%% below floor %.1f%%", analytics.atm_iv, iv_floor)
+            return None
+        elif analytics.atm_iv < iv_low:
+            score += 10
+            reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — low premium, marginal")
+        elif analytics.atm_iv < iv_sweet:
             score += 25
-            reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — low, favorable for selling")
-        elif analytics.atm_iv < iv_mod:
-            score += 15
-            reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — moderate")
+            reasons.append(f"ATM IV at {analytics.atm_iv:.1f}% — sweet spot for selling")
         else:
             score -= 10
     else:
@@ -258,6 +262,19 @@ def _eval_short_straddle(
         else:
             score -= 5
 
+    # Spot not near heavy OI walls (support or resistance)
+    if analytics.support_strike > 0 and analytics.resistance_strike > 0:
+        range_width = analytics.resistance_strike - analytics.support_strike
+        if range_width > 0:
+            mid = (analytics.support_strike + analytics.resistance_strike) / 2
+            dist_from_mid_pct = abs(tech.spot - mid) / range_width * 100
+            if dist_from_mid_pct < 20:
+                score += 10
+                reasons.append(f"Spot centered in OI range ({analytics.support_strike:.0f}-{analytics.resistance_strike:.0f})")
+            elif dist_from_mid_pct > 40:
+                score -= 10
+                reasons.append("Spot near edge of OI range — directional risk")
+
     # PCR near neutral
     pcr_lo = _p(ov, "pcr_neutral_low", 0.8)
     pcr_hi = _p(ov, "pcr_neutral_high", 1.2)
@@ -283,6 +300,11 @@ def _eval_short_straddle(
 
     lot = _lot_size()
     premium_collected = (atm.ce_ltp + atm.pe_ltp) * lot
+    min_premium_per_lot = _p(ov, "min_premium_per_lot", 150)
+    if premium_collected < min_premium_per_lot:
+        logger.info("Short Straddle blocked — premium/lot ₹%.0f < min ₹%.0f", premium_collected, min_premium_per_lot)
+        return None
+
     return TradeSuggestion(
         strategy=StrategyName.SHORT_STRADDLE,
         legs=[
@@ -328,14 +350,21 @@ def _eval_short_strangle(
     reasons: list[str] = []
     checks: list[str] = []
 
-    iv_low = _p(ov, "iv_low_threshold", 18)
-    iv_mod = _p(ov, "iv_moderate_threshold", 22)
+    iv_floor = _p(ov, "iv_floor", 8.0)
+    iv_low = _p(ov, "iv_low_threshold", 14)
+    iv_sweet = _p(ov, "iv_sweet_threshold", 22)
     if analytics.atm_iv > 0:
-        if analytics.atm_iv < iv_low:
-            score += 20
-            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — favorable for selling")
-        elif analytics.atm_iv < iv_mod:
+        if analytics.atm_iv < iv_floor:
+            logger.info("Short Strangle blocked — IV %.1f%% below floor %.1f%%", analytics.atm_iv, iv_floor)
+            return None
+        elif analytics.atm_iv < iv_low:
             score += 10
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — low premium, marginal")
+        elif analytics.atm_iv < iv_sweet:
+            score += 20
+            reasons.append(f"ATM IV {analytics.atm_iv:.1f}% — sweet spot for selling")
+        else:
+            score -= 10
     else:
         score -= 5
         reasons.append("IV data unavailable — cannot assess volatility")
@@ -379,6 +408,11 @@ def _eval_short_strangle(
 
     lot = _lot_size()
     premium = (otm_ce.ce_ltp + otm_pe.pe_ltp) * lot
+    min_premium_per_lot = _p(ov, "min_premium_per_lot", 150)
+    if premium < min_premium_per_lot:
+        logger.info("Short Strangle blocked — premium/lot ₹%.0f < min ₹%.0f", premium, min_premium_per_lot)
+        return None
+
     return TradeSuggestion(
         strategy=StrategyName.SHORT_STRANGLE,
         legs=[
@@ -757,7 +791,7 @@ def _eval_bull_call_spread(
         reasons.append(f"Spot above VWAP ({tech.vwap:.0f})")
 
     rsi_bull_lo = _p(ov, "rsi_bullish_low", 50)
-    rsi_ob = _p(ov, "rsi_overbought_threshold", 70)
+    rsi_ob = _p(ov, "rsi_overbought_threshold", 65)
     if rsi_bull_lo < tech.rsi < rsi_ob:
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — bullish momentum, not overbought")
@@ -829,9 +863,9 @@ def _eval_bear_put_spread(
         score += 10
         reasons.append(f"Spot below VWAP ({tech.vwap:.0f})")
 
-    rsi_bear_lo = _p(ov, "rsi_bearish_low", 30)
+    rsi_bear_lo = _p(ov, "rsi_bearish_low", 35)
     rsi_bear_hi = _p(ov, "rsi_bearish_high", 50)
-    rsi_os = _p(ov, "rsi_oversold_threshold", 30)
+    rsi_os = _p(ov, "rsi_oversold_threshold", 35)
     if rsi_bear_lo < tech.rsi < rsi_bear_hi:
         score += 15
         reasons.append(f"RSI {tech.rsi:.1f} — bearish momentum, not oversold")
@@ -912,11 +946,21 @@ def _eval_iron_condor(
         score += 15
         reasons.append(f"BB width {bw:.1f}% — tight range")
 
-    iv_mod = _p(ov, "iv_moderate_threshold", 18)
+    iv_floor = _p(ov, "iv_floor", 8.0)
+    iv_low = _p(ov, "iv_low_threshold", 12)
+    iv_sweet = _p(ov, "iv_sweet_threshold", 18)
     if analytics.atm_iv > 0:
-        if analytics.atm_iv < iv_mod:
+        if analytics.atm_iv < iv_floor:
+            logger.info("Iron Condor blocked — IV %.1f%% below floor %.1f%%", analytics.atm_iv, iv_floor)
+            return None
+        elif analytics.atm_iv < iv_low:
+            score += 5
+            reasons.append(f"IV {analytics.atm_iv:.1f}% — low premium, marginal for Iron Condor")
+        elif analytics.atm_iv < iv_sweet:
             score += 15
-            reasons.append(f"IV {analytics.atm_iv:.1f}% — moderate, good for selling")
+            reasons.append(f"IV {analytics.atm_iv:.1f}% — sweet spot for selling")
+        else:
+            score -= 10
     else:
         score -= 5
         reasons.append("IV data unavailable — cannot assess volatility")
@@ -954,6 +998,10 @@ def _eval_iron_condor(
     strike_width = abs(buy_ce.strike_price - sell_ce.strike_price)
     max_loss_val = (strike_width - ce_credit - pe_credit) * lot
     if total_credit <= 0:
+        return None
+    min_premium_per_lot = _p(ov, "min_premium_per_lot", 150)
+    if total_credit < min_premium_per_lot:
+        logger.info("Iron Condor blocked — premium/lot ₹%.0f < min ₹%.0f", total_credit, min_premium_per_lot)
         return None
 
     return TradeSuggestion(

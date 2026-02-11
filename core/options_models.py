@@ -52,6 +52,7 @@ class StrikeData(BaseModel):
     ce_ltp: float = 0.0
     ce_bid: float = 0.0
     ce_ask: float = 0.0
+    ce_delta: float = 0.0
     pe_oi: float = 0.0
     pe_change_in_oi: float = 0.0
     pe_volume: int = 0
@@ -59,6 +60,7 @@ class StrikeData(BaseModel):
     pe_ltp: float = 0.0
     pe_bid: float = 0.0
     pe_ask: float = 0.0
+    pe_delta: float = 0.0
 
 
 class OptionChainData(BaseModel):
@@ -86,6 +88,7 @@ class OptionsAnalytics(BaseModel):
     atm_strike: float = 0.0
     atm_iv: float = 0.0
     iv_skew: float = 0.0
+    iv_percentile: float = 50.0  # percentile rank of current ATM IV over lookback
 
 
 class TechnicalIndicators(BaseModel):
@@ -96,6 +99,7 @@ class TechnicalIndicators(BaseModel):
     spot_change_pct: float = 0.0
     vwap: float = 0.0
     ema_9: float = 0.0
+    ema_20: float = 0.0
     ema_21: float = 0.0
     ema_50: float = 0.0
     rsi: float = 0.0
@@ -134,6 +138,14 @@ class TradeSuggestion(BaseModel):
     stop_loss: str
     position_size: str
     reasoning: list[str]  # 3-5 bullet points
+    # Numeric fields (populated by V2 Institutional; optional for V1)
+    risk_reward_ratio: float = 0.0
+    pop: float = 0.0  # probability of profit (0-100)
+    max_loss_numeric: float = 0.0
+    max_profit_numeric: float = 0.0
+    liquidity_score: float = 0.0  # 0-100
+    net_credit_debit: float = 0.0  # positive = credit, negative = debit
+    rejection_reason: str = ""  # non-empty if trade was rejected
 
 
 class SignalCard(BaseModel):

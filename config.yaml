@@ -132,10 +132,10 @@ options_desk:
     lot_size: 65
     otm_offset: 2
     spread_width: 2
-    min_score: 20
+    min_score: 40
 
 paper_trading:
-  initial_capital: 2500000
+  initial_capital: 5000000
   lot_size: 65
   auto_execute: true
   min_score_to_trade: 50
@@ -145,6 +145,8 @@ paper_trading:
   daily_loss_limit_pct: 3.0
   debit_max_hold_minutes: 120
   eod_close_time: "15:20"
+  entry_start_time: "10:00"         # Warmup 9:15-10:00 — collect data before trading
+  entry_cutoff_time: "15:10"
   max_open_positions: 3
   max_positions_per_direction: 2
   max_staleness_minutes: 20
@@ -179,6 +181,50 @@ paper_trading:
     long_put_pe: 0
     long_straddle: 0
     long_strangle: 0
+
+algorithms:
+  sentinel:
+    enabled: true
+    display_name: "V1 Sentinel"
+  institutional:
+    enabled: true
+    display_name: "V2 Institutional"
+    # Risk limits
+    max_capital_risk_per_trade_pct: 1.0      # 1% of account per trade
+    max_margin_utilization_pct: 30.0
+    daily_loss_shutdown_pct: 2.0              # full shutdown threshold
+    max_open_positions: 5
+    max_positions_per_direction: 2
+    vix_spread_only_threshold: 28.0          # VIX above this → spreads only
+    expiry_day_cutoff_time: "13:30"          # no new trades after this on expiry
+    # Credit strategy rules
+    credit_max_risk_reward: 2.5              # reject if RR > 2.5
+    strangle_min_credit_pct_spot: 2.0        # credit ≥ 2% of spot
+    strangle_delta_min: 0.12
+    strangle_delta_max: 0.20
+    spread_widths: [50, 100]                 # allowed spread widths in points
+    spread_min_credit_pct_width: 30.0        # credit ≥ 30% of width
+    credit_sl_multiplier: 2.2                # exit at 2.2× credit
+    strangle_leg_double_exit: true
+    strangle_delta_exit_threshold: 0.35
+    strangle_total_loss_multiplier: 1.2
+    # Debit strategy rules
+    debit_min_risk_reward: 1.8               # RR ≥ 1:1.8
+    debit_min_pop_pct: 40.0                  # POP ≥ 40%
+    debit_sl_premium_loss_pct: 50.0
+    debit_max_sessions: 3
+    # Liquidity thresholds
+    min_oi: 10000
+    min_volume: 1000
+    max_bid_ask_pct: 5.0
+    # IV percentile thresholds
+    credit_min_iv_percentile: 50.0
+    debit_max_iv_percentile: 50.0
+    # Portfolio defense
+    consecutive_loss_half_size: 2
+    consecutive_loss_halt: 3
+    # Execution
+    slippage_per_leg: 0.05                   # ₹0.05 per leg (1 tick)
 
 criticizer:
   enabled: true

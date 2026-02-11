@@ -142,6 +142,67 @@ def compute_iv_skew(chain: OptionChainData, otm_offset: int = 3) -> float:
     return avg_put_iv - avg_call_iv
 
 
+def compute_liquidity_score(
+    chain: OptionChainData,
+    strikes: list[float],
+    min_oi: float = 10_000,
+    min_volume: int = 1_000,
+    max_ba_pct: float = 5.0,
+) -> tuple[float, str | None]:
+    """Compute a liquidity score (0-100) for the given strikes.
+
+    Returns (score, rejection_reason or None).
+    A rejection_reason is set if any strike fails minimum thresholds.
+    """
+    if not strikes:
+        return 0.0, "no strikes provided"
+
+    strike_lookup = {s.strike_price: s for s in chain.strikes}
+    total_score = 0.0
+    checked = 0
+
+    for sp in strikes:
+        sd = strike_lookup.get(sp)
+        if sd is None:
+            return 0.0, f"strike {sp} not found in chain"
+
+        # Check both CE and PE sides
+        for side, oi, vol, bid, ask in [
+            ("CE", sd.ce_oi, sd.ce_volume, sd.ce_bid, sd.ce_ask),
+            ("PE", sd.pe_oi, sd.pe_volume, sd.pe_bid, sd.pe_ask),
+        ]:
+            if oi <= 0 and vol <= 0:
+                continue  # skip side with no data
+            checked += 1
+
+            # OI score (0-40)
+            if oi < min_oi:
+                return 0.0, f"{side} OI {oi:.0f} at {sp} < min {min_oi:.0f}"
+            oi_score = min(40.0, (oi / min_oi) * 10)
+
+            # Volume score (0-30)
+            if vol < min_volume:
+                return 0.0, f"{side} volume {vol} at {sp} < min {min_volume}"
+            vol_score = min(30.0, (vol / min_volume) * 10)
+
+            # Bid-ask spread score (0-30)
+            if bid > 0 and ask > 0:
+                mid = (bid + ask) / 2.0
+                ba_pct = ((ask - bid) / mid) * 100 if mid > 0 else 100.0
+                if ba_pct > max_ba_pct:
+                    return 0.0, f"{side} bid-ask {ba_pct:.1f}% at {sp} > max {max_ba_pct}%"
+                ba_score = max(0.0, 30.0 * (1.0 - ba_pct / max_ba_pct))
+            else:
+                ba_score = 0.0
+
+            total_score += oi_score + vol_score + ba_score
+
+    if checked == 0:
+        return 0.0, "no liquidity data available"
+
+    return round(min(100.0, total_score / checked), 1), None
+
+
 def build_analytics(chain: OptionChainData) -> OptionsAnalytics:
     """Run all option chain analytics and return an OptionsAnalytics model."""
     pcr = compute_pcr(chain)
