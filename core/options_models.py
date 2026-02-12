@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, Field
+from typing import Any
 
-from core.observation import ObservationSnapshot
+from pydantic import BaseModel, Field
 
 
 class SignalDirection(str, Enum):
@@ -176,5 +176,5 @@ class OptionsDeskSnapshot(BaseModel):
     errors: list[str] = Field(default_factory=list)
     candle_meta: FetchMeta | None = None
     chain_meta: FetchMeta | None = None
-    observation: ObservationSnapshot | None = None
+    observation: Any = None  # ObservationSnapshot | None — typed as Any to avoid Pydantic resolution issues
     timestamp: datetime = Field(default_factory=datetime.utcnow)
