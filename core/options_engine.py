@@ -1,6 +1,7 @@
 """Orchestrator for the Intraday Options Desk."""
 
 import logging
+import time
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ from core.nse_fetcher import KiteOptionChainFetcher
 from core.greeks import compute_chain_deltas
 from core.options_analytics import build_analytics
 from core.options_models import (
+    FetchMeta,
     OptionChainData,
     OptionsDeskSnapshot,
     OptionsAnalytics,
@@ -47,6 +49,8 @@ class OptionsDeskEngine:
         chain: OptionChainData | None = None
         analytics: OptionsAnalytics | None = None
         technicals: TechnicalIndicators | None = None
+        chain_meta: FetchMeta | None = None
+        candle_meta: FetchMeta | None = None
 
         # Fetch option chain via Kite Connect
         try:
@@ -83,6 +87,7 @@ class OptionsDeskEngine:
                 except Exception as iv_exc:
                     logger.warning("IV history update failed: %s", iv_exc)
 
+            chain_meta = FetchMeta(source="Kite Connect", fetch_ts=time.time(), is_primary=True)
             logger.info("Option chain loaded via Kite Connect (%d strikes)", len(chain.strikes))
         except Exception as exc:
             logger.error("Option chain fetch failed: %s", exc)
@@ -98,6 +103,12 @@ class OptionsDeskEngine:
             if not df.empty:
                 self._last_df = df
                 technicals = self._build_technicals(df)
+                source = self._candle.last_fetch_source or "unknown"
+                candle_meta = FetchMeta(
+                    source=source,
+                    fetch_ts=time.time(),
+                    is_primary="Kite" in source,
+                )
         except Exception as exc:
             logger.error("Candle fetch failed: %s", exc)
             errors.append(f"Candle data unavailable: {exc}")
@@ -122,6 +133,8 @@ class OptionsDeskEngine:
             signals=signals,
             trade_suggestions=[],
             errors=errors,
+            candle_meta=candle_meta,
+            chain_meta=chain_meta,
         )
 
     def get_candle_dataframe(self) -> pd.DataFrame | None:

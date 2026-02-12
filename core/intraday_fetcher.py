@@ -30,6 +30,7 @@ class IntradayCandleFetcher:
 
     def __init__(self, ticker: str = "^NSEI") -> None:
         self._ticker = ticker
+        self.last_fetch_source: str | None = None
 
     def _get_kite(self):
         """Create a fresh KiteConnect instance (re-reads env for token refreshes)."""
@@ -134,8 +135,12 @@ class IntradayCandleFetcher:
     ) -> pd.DataFrame:
         """Return OHLCV DataFrame — tries Kite first, falls back to yfinance."""
         try:
-            return self._fetch_kite(period, interval)
+            df = self._fetch_kite(period, interval)
+            self.last_fetch_source = "Kite Connect"
+            return df
         except Exception as exc:
             logger.warning("Kite candle fetch failed: %s — trying yfinance", exc)
 
-        return self._fetch_yfinance(period, interval)
+        df = self._fetch_yfinance(period, interval)
+        self.last_fetch_source = "yfinance (fallback)"
+        return df

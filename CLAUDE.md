@@ -189,6 +189,7 @@ All config lives in `config.yaml`:
 4. **Neutral vol fallback (V4)** — When `get_today_vol_snapshot()` fails, Atlas uses all percentiles = 0.5. This produces valid but meaningless thresholds that mask data quality problems.
 5. ~~**No chain validation**~~ — **FIXED**: `core/validation.py` has `validate_option_chain()` with 5+ checks.
 6. ~~**No startup health checks**~~ — **FIXED**: `core/health.py` runs 5 checks at startup; System Health tab in dashboard.
+7. **Streamlit `use_container_width` deprecation** — Streamlit removed `use_container_width` after 2025-12-31. Replace with `width='stretch'` (for `True`) or `width='content'` (for `False`) across `app.py` and `ui/` components.
 
 See `docs/production-readiness.md` for the full gap analysis and prioritized checklist.
 
@@ -240,3 +241,8 @@ See `docs/production-readiness.md` for the full gap analysis and prioritized che
 | 2026-02-11 | `core/health.py` (new) | 5 startup health checks (config, database, data dir, Kite creds, Anthropic key) | Dashboard started even if DB/config/API keys missing (Known Issue #6) |
 | 2026-02-11 | `ui/system_health_tab.py` (new) | System Health monitoring tab: startup checks, circuit breakers, data freshness, audit trail | No system health visibility in dashboard |
 | 2026-02-11 | `app.py` | Add startup health checks + System Health tab as first tab | No health monitoring; Known Issue #6 |
+| 2026-02-12 | `core/options_models.py` | Add `FetchMeta` model + `candle_meta`/`chain_meta` fields on `OptionsDeskSnapshot` | Track data source and fetch timing for health monitoring |
+| 2026-02-12 | `core/intraday_fetcher.py` | Add `last_fetch_source` attribute to track Kite vs yfinance | Operators need to know which source served candle data |
+| 2026-02-12 | `core/options_engine.py` | Populate `FetchMeta` after chain/candle fetches in `fetch_snapshot()` | Wire source metadata into snapshot for downstream consumption |
+| 2026-02-12 | `ui/options_desk_tab.py` | Set `last_chain_fetch_ts`/`last_candle_fetch_ts` from snapshot metadata | Fix Data Freshness always showing "No data" for chain/candle (bug) |
+| 2026-02-12 | `ui/system_health_tab.py` | Add Live Technical Data section with per-indicator traffic-light table | No per-indicator freshness monitoring; operators couldn't verify primary data source |

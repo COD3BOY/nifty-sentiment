@@ -15,6 +15,104 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def _traffic_light(meta, label: str) -> tuple[str, str, str]:
+    """Return (icon, status_text, source) for a FetchMeta-backed indicator.
+
+    Traffic-light rules:
+    - Green:  < 60s AND primary source
+    - Yellow: 60-90s AND primary source
+    - Red:    > 90s (any source), fallback source, or no data
+    """
+    if meta is None:
+        return ("🔴", "No data", "—")
+
+    age = time.time() - meta.fetch_ts
+    source = meta.source
+
+    if not meta.is_primary:
+        return ("🔴", f"{int(age)}s ago", source)
+    if age > 90:
+        return ("🔴", f"{int(age)}s ago", source)
+    if age > 60:
+        return ("🟡", f"{int(age)}s ago", source)
+    return ("🟢", f"{int(age)}s ago", source)
+
+
+def _render_live_technical_table() -> None:
+    """Render the Live Technical Data monitoring table."""
+    snap = st.session_state.get("options_snapshot")
+    if snap is None:
+        st.info("No live data yet — open the **Options Desk** tab to trigger a fetch.")
+        return
+
+    candle_meta = snap.candle_meta
+    chain_meta = snap.chain_meta
+
+    # Warn if candle data is from fallback source
+    if candle_meta and not candle_meta.is_primary:
+        st.warning(
+            f"Candle data is from **{candle_meta.source}** — "
+            "all candle-derived indicators are based on delayed/fallback data."
+        )
+
+    rows: list[dict] = []
+
+    # --- Candle-derived indicators ---
+    tech = snap.technicals
+    if tech and candle_meta:
+        icon, age_text, source = _traffic_light(candle_meta, "candle")
+        candle_rows = [
+            ("Spot Price", f"{tech.spot:,.1f}"),
+            ("VWAP", f"{tech.vwap:,.1f}"),
+            ("RSI (9)", f"{tech.rsi:.1f}"),
+            ("EMA 9", f"{tech.ema_9:,.1f}"),
+            ("EMA 21", f"{tech.ema_21:,.1f}"),
+            ("EMA 50", f"{tech.ema_50:,.1f}"),
+            ("Supertrend", f"{tech.supertrend:,.1f} ({'Bull' if tech.supertrend_direction == 1 else 'Bear'})"),
+            ("BB Upper", f"{tech.bb_upper:,.1f}"),
+            ("BB Middle", f"{tech.bb_middle:,.1f}"),
+            ("BB Lower", f"{tech.bb_lower:,.1f}"),
+        ]
+        for label, value in candle_rows:
+            rows.append({
+                "Status": icon,
+                "Indicator": label,
+                "Value": value,
+                "Source": source,
+                "Age": age_text,
+            })
+
+    # --- Chain-derived indicators ---
+    anl = snap.analytics
+    if anl and chain_meta:
+        icon, age_text, source = _traffic_light(chain_meta, "chain")
+        chain_rows = [
+            ("PCR", f"{anl.pcr:.3f}"),
+            ("ATM IV", f"{anl.atm_iv:.1f}%"),
+            ("IV Skew", f"{anl.iv_skew:+.1f}"),
+            ("IV Percentile", f"{anl.iv_percentile:.0f}"),
+            ("Max Pain", f"{anl.max_pain:,.0f}"),
+            ("Support (PE OI)", f"{anl.support_strike:,.0f} ({anl.support_oi:,.0f})"),
+            ("Resistance (CE OI)", f"{anl.resistance_strike:,.0f} ({anl.resistance_oi:,.0f})"),
+        ]
+        for label, value in chain_rows:
+            rows.append({
+                "Status": icon,
+                "Indicator": label,
+                "Value": value,
+                "Source": source,
+                "Age": age_text,
+            })
+
+    if not rows:
+        st.info("No indicator data available in the current snapshot.")
+        return
+
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    st.dataframe(df, hide_index=True, width=None)
+
+
 def _staleness_indicator(ts: float | None, label: str) -> None:
     """Display a metric with green/yellow/red staleness based on age."""
     if ts is None or ts <= 0:
@@ -138,6 +236,15 @@ def render_system_health_tab() -> None:
     with cols[3]:
         pm_ts = st.session_state.get("pm_last_refresh", 0.0)
         _staleness_indicator(pm_ts if pm_ts > 0 else None, "Sentiment")
+
+    st.divider()
+
+    # ----------------------------------------------------------------
+    # Section 3.5: Live Technical Data
+    # ----------------------------------------------------------------
+    st.subheader("Live Technical Data")
+    st.caption("Per-indicator freshness — green = live primary data, red = stale or fallback")
+    _render_live_technical_table()
 
     st.divider()
 

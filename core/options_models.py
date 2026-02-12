@@ -41,6 +41,14 @@ class MomentumLevel(str, Enum):
     OVERBOUGHT = "overbought"
 
 
+class FetchMeta(BaseModel):
+    """Metadata about a data fetch — tracks source, timing, and primary/fallback status."""
+
+    source: str = "unknown"
+    fetch_ts: float = 0.0
+    is_primary: bool = True
+
+
 class StrikeData(BaseModel):
     """Single strike row from the option chain."""
 
@@ -165,4 +173,6 @@ class OptionsDeskSnapshot(BaseModel):
     signals: list[SignalCard] = Field(default_factory=list)
     trade_suggestions: list[TradeSuggestion] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    candle_meta: FetchMeta | None = None
+    chain_meta: FetchMeta | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
