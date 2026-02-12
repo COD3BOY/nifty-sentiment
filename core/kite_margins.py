@@ -170,7 +170,8 @@ def get_kite_margin(
         _cache_set(cache_key, total_margin)
         return total_margin
     except Exception:
-        logger.warning("Kite basket_order_margins failed, falling back to static", exc_info=True)
+        logger.warning("Kite basket_order_margins failed, falling back to static margin estimates")
+        logger.debug("Kite basket_order_margins traceback", exc_info=True)
         return None
 
 
@@ -237,7 +238,8 @@ def get_kite_charges(
         _cache_set(cache_key, total_charges)
         return total_charges
     except Exception:
-        logger.warning("Kite get_virtual_contract_note failed, falling back to static", exc_info=True)
+        logger.warning("Kite get_virtual_contract_note failed, falling back to static charges")
+        logger.debug("Kite get_virtual_contract_note traceback", exc_info=True)
         return None
 
 
