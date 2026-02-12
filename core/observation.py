@@ -6,8 +6,6 @@ context from the existing 5-day 5-min candle DataFrame. No extra API calls.
 All functions are pure: DataFrame in, Pydantic model out.
 """
 
-from __future__ import annotations
-
 import logging
 from datetime import time as dt_time
 
