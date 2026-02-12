@@ -116,7 +116,7 @@ def _render_live_technical_table() -> None:
 
     import pandas as pd
     df = pd.DataFrame(rows)
-    st.dataframe(df, hide_index=True, width="stretch")
+    st.dataframe(df, hide_index=True, width="stretch", height=(len(rows) + 1) * 35 + 3)
 
 
 def _staleness_indicator(ts: float | None, label: str) -> None:
