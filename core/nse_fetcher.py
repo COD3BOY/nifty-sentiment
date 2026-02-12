@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 _instruments_cache: dict[str, tuple[list, float]] = {}
 _INSTRUMENTS_TTL = 1800  # 30 minutes
 _INSTRUMENTS_DISK_CACHE = Path("data/nfo_instruments_cache.pkl")
+_instruments_last_failure: float = 0.0
+_INSTRUMENTS_RETRY_AFTER = 300  # 5 min cooldown after rate-limit failure
 
 
 def _get_cached_instruments() -> list | None:
@@ -104,23 +106,38 @@ class KiteOptionChainFetcher:
             raise ValueError("Kite Connect credentials not configured (KITE_API_KEY / KITE_ACCESS_TOKEN)")
 
         # 1. Get all NFO instruments (memory → disk → API, with stale fallback)
+        global _instruments_last_failure
         all_instruments = _get_cached_instruments()
         if all_instruments is None:
-            cb = kite_guard_sync()
-            try:
-                all_instruments = kite.instruments("NFO")
-                cb.record_success()
-                _put_instruments_cache(all_instruments)
-                logger.info("Fetched NFO instruments from Kite (%d items)", len(all_instruments))
-            except Exception as inst_exc:
-                cb.record_failure()
-                # Fall back to stale cache (memory or disk) rather than failing
+            # Don't hammer Kite if we were recently rate-limited
+            cooldown_remaining = _INSTRUMENTS_RETRY_AFTER - (time.time() - _instruments_last_failure)
+            if cooldown_remaining > 0:
                 stale = _get_stale_instruments()
                 if stale is not None:
                     all_instruments = stale
-                    logger.warning("instruments() failed (%s), using stale cache", inst_exc)
+                    logger.info("instruments() in cooldown (%.0fs left), using stale cache", cooldown_remaining)
                 else:
-                    raise
+                    raise DataFetchError(
+                        f"instruments() rate-limited, retry in {int(cooldown_remaining)}s (no cached data available)"
+                    )
+            else:
+                cb = kite_guard_sync()
+                try:
+                    all_instruments = kite.instruments("NFO")
+                    cb.record_success()
+                    _instruments_last_failure = 0.0
+                    _put_instruments_cache(all_instruments)
+                    logger.info("Fetched NFO instruments from Kite (%d items)", len(all_instruments))
+                except Exception as inst_exc:
+                    cb.record_failure()
+                    _instruments_last_failure = time.time()
+                    # Fall back to stale cache (memory or disk) rather than failing
+                    stale = _get_stale_instruments()
+                    if stale is not None:
+                        all_instruments = stale
+                        logger.warning("instruments() failed (%s), using stale cache", inst_exc)
+                    else:
+                        raise
         option_instruments = [
             inst for inst in all_instruments
             if inst["name"] == symbol
