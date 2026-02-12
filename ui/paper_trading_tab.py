@@ -122,6 +122,7 @@ def render_paper_trading_tab(
     algo_display_name: str = "Paper Trading",
     algo_description: str = "",
     evaluate_fn=None,
+    observation=None,
 ) -> None:
     """Main entry point for the Paper Trading tab.
 
@@ -131,6 +132,7 @@ def render_paper_trading_tab(
     algo_display_name : UI label shown in header
     algo_description : short summary of the algorithm's strategy
     evaluate_fn : optional override for evaluate_and_manage (algorithm's own implementation)
+    observation : ObservationSnapshot from the observation period engine
     """
     state = _get_state(algo_name)
 
@@ -168,6 +170,7 @@ def render_paper_trading_tab(
         state, suggestions, chain,
         technicals=technicals, analytics=analytics,
         lot_size=lot_size, refresh_ts=refresh_ts,
+        observation=observation,
     )
     _set_state(new_state, algo_name)
     state = new_state

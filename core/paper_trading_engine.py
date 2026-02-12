@@ -635,6 +635,7 @@ def evaluate_and_manage(
     analytics: OptionsAnalytics | None = None,
     lot_size: int | None = None,
     refresh_ts: float = 0.0,
+    observation=None,
 ) -> PaperTradingState:
     """Main paper trading loop. Pure function: state in, state out.
 

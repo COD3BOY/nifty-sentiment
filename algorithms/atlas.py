@@ -16,8 +16,11 @@ from __future__ import annotations
 import logging
 import math
 import time as _time
+from typing import TYPE_CHECKING
+
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
+from core.config import load_config
 from core.event_calendar import is_near_event
 from core.greeks import bs_delta, compute_pop
 from core.market_hours import is_market_open
@@ -55,8 +58,12 @@ from core.options_utils import (
     is_breakout as _is_breakout,
     reset_period_tracking as _reset_period_tracking,
     compute_expected_move as _compute_expected_move,
+    is_observation_period as _is_observation_period,
 )
 from core.vol_distribution import VolSnapshot, get_today_vol_snapshot
+
+if TYPE_CHECKING:
+    from core.observation import ObservationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -1032,6 +1039,7 @@ class AtlasAlgorithm(TradingAlgorithm):
         chain: OptionChainData,
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
+        observation: ObservationSnapshot | None = None,
     ) -> list[TradeSuggestion]:
         if not is_market_open():
             return []
@@ -1148,6 +1156,7 @@ class AtlasAlgorithm(TradingAlgorithm):
         analytics: OptionsAnalytics | None = None,
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
+        observation: ObservationSnapshot | None = None,
     ) -> PaperTradingState:
         # Market-open guard: skip all trading logic when market is closed
         if not is_market_open():
@@ -1174,6 +1183,21 @@ class AtlasAlgorithm(TradingAlgorithm):
         # Build trade status notes for dashboard visibility
         notes: list[str] = []
         notes.append(f"Regime: {regime} (pRV={vol.p_rv:.2f}, pVoV={vol.p_vov:.2f}, pVRP={vol.p_vrp:.2f})")
+
+        # Add observation context to notes
+        if observation:
+            obs_parts = [f"Observation: {observation.bias} bias"]
+            if observation.opening_range.range_pct > 0:
+                obs_parts.append(f"OR {observation.opening_range.range_pct:.2f}%")
+            if observation.volume.classification != "normal":
+                obs_parts.append(f"vol {observation.volume.classification} ({observation.volume.relative_volume:.1f}x)")
+            notes.append(" | ".join(obs_parts))
+
+            # Atlas-specific: compare OR range to expected move
+            if observation.is_complete and vol.em > 0 and observation.opening_range.range_points > 0:
+                or_coverage = (observation.opening_range.range_points / vol.em) * 100
+                if or_coverage > 70:
+                    notes.append(f"OR covers {or_coverage:.0f}% of expected move — move may be exhausted")
 
         if regime == "stand_down":
             if vol.p_vov >= cfg.get("standdown_vov_min", 0.85):
@@ -1331,6 +1355,13 @@ class AtlasAlgorithm(TradingAlgorithm):
                 return state.model_copy(update={"trade_status_notes": notes})
 
         # --- Phase 2: Open new positions ---
+        # Observation period guard: collect data, don't trade yet
+        entry_start = cfg.get("entry_start_time",
+                              load_config().get("paper_trading", {}).get("entry_start_time", "10:00"))
+        if _is_observation_period(entry_start):
+            notes.append(f"Observation period active — collecting data before {entry_start}")
+            return state.model_copy(update={"trade_status_notes": notes})
+
         if not state.is_auto_trading:
             notes.append("Auto-trading is OFF")
             return state.model_copy(update={"trade_status_notes": notes})

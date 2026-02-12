@@ -6,7 +6,7 @@ Extracted from jarvis.py, optimus.py, atlas.py to eliminate duplication.
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, time as dt_time
 
 from core.options_models import OptionChainData, TechnicalIndicators, TradeLeg
 from core.paper_trading_models import PaperTradingState, _IST, _now_ist
@@ -86,3 +86,23 @@ def compute_expected_move(spot: float, iv_or_vix: float, dte: int) -> float:
     if spot <= 0 or iv_or_vix <= 0 or dte <= 0:
         return 0.0
     return spot * (iv_or_vix / 100.0) * math.sqrt(dte / 365.0)
+
+
+def is_observation_period(entry_start_time: str = "10:00") -> bool:
+    """Check if current time is within the observation window (9:15 to entry_start_time).
+
+    Returns True if the market is open but we're before the entry start time.
+    Returns False if the market is closed or past entry start time.
+    """
+    from core.market_hours import is_market_open
+    if not is_market_open():
+        return False
+
+    now = _now_ist()
+    try:
+        h, m = (int(x) for x in entry_start_time.split(":"))
+        cutoff = dt_time(h, m)
+    except (ValueError, TypeError):
+        cutoff = dt_time(10, 0)
+
+    return now.time() < cutoff

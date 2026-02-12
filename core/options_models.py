@@ -1,9 +1,15 @@
 """Pydantic models for the Intraday Options Desk."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from core.observation import ObservationSnapshot
 
 
 class SignalDirection(str, Enum):
@@ -175,4 +181,5 @@ class OptionsDeskSnapshot(BaseModel):
     errors: list[str] = Field(default_factory=list)
     candle_meta: FetchMeta | None = None
     chain_meta: FetchMeta | None = None
+    observation: "ObservationSnapshot | None" = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

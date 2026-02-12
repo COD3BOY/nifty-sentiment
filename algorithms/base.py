@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from core.options_models import (
     OptionChainData,
@@ -11,6 +12,9 @@ from core.options_models import (
     TradeSuggestion,
 )
 from core.paper_trading_models import PaperTradingState
+
+if TYPE_CHECKING:
+    from core.observation import ObservationSnapshot
 
 
 class TradingAlgorithm(ABC):
@@ -33,6 +37,7 @@ class TradingAlgorithm(ABC):
         chain: OptionChainData,
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
+        observation: ObservationSnapshot | None = None,
     ) -> list[TradeSuggestion]:
         """Generate trade suggestions from shared market data."""
 
@@ -46,6 +51,7 @@ class TradingAlgorithm(ABC):
         analytics: OptionsAnalytics | None = None,
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
+        observation: ObservationSnapshot | None = None,
     ) -> PaperTradingState:
         """Manage existing positions and optionally open new ones.
 

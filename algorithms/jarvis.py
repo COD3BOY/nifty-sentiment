@@ -23,8 +23,11 @@ import time as _time
 from collections import Counter
 from datetime import datetime, time
 
+from typing import TYPE_CHECKING
+
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
+from core.config import load_config
 from core.greeks import bs_delta, compute_pop
 from core.market_hours import is_market_open
 from core.options_analytics import compute_liquidity_score
@@ -57,7 +60,11 @@ from core.paper_trading_models import (
 from core.options_utils import (
     get_strike_data as _get_strike_data,
     compute_spread_width as _compute_spread_width,
+    is_observation_period as _is_observation_period,
 )
+
+if TYPE_CHECKING:
+    from core.observation import ObservationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +559,7 @@ class JarvisAlgorithm(TradingAlgorithm):
         chain: OptionChainData,
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
+        observation: ObservationSnapshot | None = None,
     ) -> list[TradeSuggestion]:
         """Generate and validate suggestions using Jarvis rules.
 
@@ -642,6 +650,7 @@ class JarvisAlgorithm(TradingAlgorithm):
         analytics: OptionsAnalytics | None = None,
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
+        observation: ObservationSnapshot | None = None,
     ) -> PaperTradingState:
         """Manage positions with institutional risk rules."""
         # Market-open guard: skip all trading logic when market is closed
@@ -654,6 +663,14 @@ class JarvisAlgorithm(TradingAlgorithm):
 
         # Build trade status notes for dashboard visibility
         notes: list[str] = []
+
+        # Add observation context to notes
+        if observation:
+            notes.append(f"Observation: {observation.bias} bias ({observation.bars_collected} bars)")
+            if observation.gap.direction != "flat":
+                notes.append(f"Gap: {observation.gap.direction} {observation.gap.gap_pct:+.2f}%")
+            notes.append(f"Trend: {observation.initial_trend.direction} ({observation.initial_trend.strength})")
+
         vix = _get_vix_from_analytics(analytics)
         if vix > 0:
             notes.append(f"VIX (ATM IV proxy): {vix:.1f}")
@@ -768,6 +785,13 @@ class JarvisAlgorithm(TradingAlgorithm):
                 return state.model_copy(update={"trade_status_notes": notes})
 
         # --- Phase 2: Open new positions ---
+        # Observation period guard: collect data, don't trade yet
+        entry_start = cfg.get("entry_start_time",
+                              load_config().get("paper_trading", {}).get("entry_start_time", "10:00"))
+        if _is_observation_period(entry_start):
+            notes.append(f"Observation period active — collecting data before {entry_start}")
+            return state.model_copy(update={"trade_status_notes": notes})
+
         if not state.is_auto_trading:
             notes.append("Auto-trading is OFF")
             return state.model_copy(update={"trade_status_notes": notes})

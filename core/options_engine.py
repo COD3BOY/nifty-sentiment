@@ -113,6 +113,16 @@ class OptionsDeskEngine:
             logger.error("Candle fetch failed: %s", exc)
             errors.append(f"Candle data unavailable: {exc}")
 
+        # Compute observation snapshot from candle data
+        observation = None
+        if df is not None and not df.empty:
+            try:
+                from core.observation import compute_observation_snapshot
+                obs_end = load_config().get("paper_trading", {}).get("entry_start_time", "10:00")
+                observation = compute_observation_snapshot(df, observation_end_time=obs_end)
+            except Exception as obs_exc:
+                logger.warning("Observation computation failed: %s", obs_exc)
+
         # Data quality warnings
         if analytics and analytics.atm_iv == 0.0:
             errors.append("IV data unavailable — IV-dependent scores unreliable")
@@ -135,6 +145,7 @@ class OptionsDeskEngine:
             errors=errors,
             candle_meta=candle_meta,
             chain_meta=chain_meta,
+            observation=observation,
         )
 
     def get_candle_dataframe(self) -> pd.DataFrame | None:

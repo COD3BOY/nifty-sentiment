@@ -17,8 +17,11 @@ from __future__ import annotations
 import logging
 import math
 import time as _time
+from typing import TYPE_CHECKING
+
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
+from core.config import load_config
 from core.event_calendar import is_near_event
 from core.greeks import bs_delta, compute_pop
 from core.market_hours import is_market_open
@@ -56,7 +59,11 @@ from core.options_utils import (
     is_breakout as _is_breakout,
     reset_period_tracking as _reset_period_tracking,
     compute_expected_move as _compute_expected_move,
+    is_observation_period as _is_observation_period,
 )
+
+if TYPE_CHECKING:
+    from core.observation import ObservationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -1076,6 +1083,7 @@ class OptimusAlgorithm(TradingAlgorithm):
         chain: OptionChainData,
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
+        observation: ObservationSnapshot | None = None,
     ) -> list[TradeSuggestion]:
         """Generate hedge trade candidates independently (no V1 dependency)."""
         if not is_market_open():
@@ -1181,6 +1189,7 @@ class OptimusAlgorithm(TradingAlgorithm):
         analytics: OptionsAnalytics | None = None,
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
+        observation: ObservationSnapshot | None = None,
     ) -> PaperTradingState:
         """Manage positions with hedge-specific risk rules."""
         # Market-open guard: skip all trading logic when market is closed
@@ -1202,6 +1211,15 @@ class OptimusAlgorithm(TradingAlgorithm):
 
         # Build trade status notes for dashboard visibility
         notes: list[str] = []
+
+        # Add observation context to notes
+        if observation:
+            notes.append(f"Observation: {observation.bias} bias ({observation.bars_collected} bars)")
+            if observation.initial_trend.strength != "weak":
+                notes.append(f"Trend: {observation.initial_trend.direction} ({observation.initial_trend.strength})")
+            if observation.volume.classification != "normal":
+                notes.append(f"Volume: {observation.volume.classification} ({observation.volume.relative_volume:.1f}x)")
+
         if vix is not None:
             notes.append(f"VIX: {vix:.1f}")
             vix_min = cfg.get("vix_no_credit_below", 14.0)
@@ -1342,6 +1360,13 @@ class OptimusAlgorithm(TradingAlgorithm):
                 return state.model_copy(update={"trade_status_notes": notes})
 
         # --- Phase 2: Open new positions ---
+        # Observation period guard: collect data, don't trade yet
+        entry_start = cfg.get("entry_start_time",
+                              load_config().get("paper_trading", {}).get("entry_start_time", "10:00"))
+        if _is_observation_period(entry_start):
+            notes.append(f"Observation period active — collecting data before {entry_start}")
+            return state.model_copy(update={"trade_status_notes": notes})
+
         if not state.is_auto_trading:
             notes.append("Auto-trading is OFF")
             return state.model_copy(update={"trade_status_notes": notes})

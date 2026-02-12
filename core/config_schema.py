@@ -13,6 +13,36 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 logger = logging.getLogger(__name__)
 
 
+class ObservationConfig(BaseModel):
+    """Validation for observation period parameters."""
+    gap_threshold_pct: float = Field(ge=0.0, le=5.0, default=0.2)
+    trend_moderate_pct: float = Field(ge=0.0, le=5.0, default=0.3)
+    trend_strong_pct: float = Field(ge=0.0, le=10.0, default=0.7)
+    volume_high_ratio: float = Field(gt=0.0, le=10.0, default=1.3)
+    volume_low_ratio: float = Field(gt=0.0, le=2.0, default=0.7)
+    vwap_consistency_pct: float = Field(ge=50.0, le=100.0, default=70.0)
+    historical_days: int = Field(ge=1, le=30, default=5)
+
+    @model_validator(mode="after")
+    def validate_trend_ordering(self) -> "ObservationConfig":
+        if self.trend_moderate_pct >= self.trend_strong_pct:
+            raise ValueError(
+                f"trend_moderate_pct ({self.trend_moderate_pct}) must be < trend_strong_pct ({self.trend_strong_pct})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_volume_ordering(self) -> "ObservationConfig":
+        if self.volume_low_ratio >= self.volume_high_ratio:
+            raise ValueError(
+                f"volume_low_ratio ({self.volume_low_ratio}) must be < volume_high_ratio ({self.volume_high_ratio})"
+            )
+        return self
+
+    class Config:
+        extra = "allow"
+
+
 class PaperTradingConfig(BaseModel):
     initial_capital: float = Field(gt=0)
     lot_size: int = Field(gt=0)
@@ -27,6 +57,7 @@ class PaperTradingConfig(BaseModel):
     eod_close_time: str = "15:20"
     entry_start_time: str = "10:00"
     entry_cutoff_time: str = "15:10"
+    observation: ObservationConfig = Field(default_factory=ObservationConfig)
 
     @field_validator("eod_close_time", "entry_start_time", "entry_cutoff_time")
     @classmethod

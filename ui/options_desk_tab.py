@@ -187,6 +187,27 @@ def render_options_desk_tab() -> None:
     if is_warmup:
         _render_warmup_view(snap, secs_remaining, entry_time)
     else:
+        # Post-warmup: show compact morning context if observation is complete
+        obs = snap.observation
+        if obs and obs.is_complete and obs.bars_collected > 0:
+            with st.expander("Morning Context (9:15-10:00 observation)", expanded=False):
+                mc_cols = st.columns(5)
+                with mc_cols[0]:
+                    or_str = f"{obs.opening_range.range_points:.0f} pts ({obs.opening_range.range_pct:.2f}%)"
+                    st.metric("Opening Range", or_str)
+                with mc_cols[1]:
+                    gap_str = f"{obs.gap.gap_pct:+.2f}%" if obs.gap.direction != "flat" else "Flat"
+                    st.metric("Gap", gap_str)
+                with mc_cols[2]:
+                    st.metric("Trend", f"{obs.initial_trend.direction.replace('_', ' ').title()} ({obs.initial_trend.strength})")
+                with mc_cols[3]:
+                    st.metric("Volume", f"{obs.volume.relative_volume:.1f}x ({obs.volume.classification})")
+                with mc_cols[4]:
+                    bias_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(obs.bias, "gray")
+                    st.metric("Bias", obs.bias.upper())
+                if obs.opening_range.breakout_direction:
+                    st.caption(f"OR breakout: {obs.opening_range.breakout_direction} ({obs.opening_range.breakout_distance_pct:.2f}%)")
+
         # Get top high-confidence suggestion per algorithm from session state
         from algorithms import get_algorithm_registry
         registry = get_algorithm_registry()
@@ -252,6 +273,42 @@ def _render_warmup_view(snap, seconds_remaining: int, entry_time: str) -> None:
     """Show warmup UI during the observation period (9:15 to entry_start_time)."""
     mins, secs = divmod(seconds_remaining, 60)
     st.info(f"Warming up — suggestions will appear at **{entry_time} IST** (in {mins}m {secs}s)")
+
+    # Observation data (accumulated during warmup)
+    obs = snap.observation
+    if obs and obs.bars_collected > 0:
+        st.markdown("**Observation Period Data**")
+        obs_cols = st.columns(4)
+        with obs_cols[0]:
+            or_label = f"{obs.opening_range.high:,.0f} - {obs.opening_range.low:,.0f}" if obs.opening_range.high > 0 else "—"
+            or_detail = f"{obs.opening_range.range_points:.0f} pts ({obs.opening_range.range_pct:.2f}%)" if obs.opening_range.range_points > 0 else ""
+            st.metric("Opening Range", or_label)
+            if or_detail:
+                st.caption(or_detail)
+            st.caption(f"{obs.bars_collected} bars collected")
+        with obs_cols[1]:
+            gap_label = f"{obs.gap.gap_pct:+.2f}%" if obs.gap.direction != "flat" else "Flat"
+            st.metric("Opening Gap", gap_label)
+            if obs.gap.direction != "flat":
+                fill_str = f"Fill: {obs.gap.gap_fill_pct:.0f}%"
+                st.caption(f"{obs.gap.direction.replace('_', ' ').title()} | {fill_str}")
+        with obs_cols[2]:
+            trend_label = f"{obs.initial_trend.direction.replace('_', ' ').title()}"
+            trend_detail = f"{obs.initial_trend.move_pct:+.2f}% ({obs.initial_trend.strength})"
+            st.metric("Initial Trend", trend_label)
+            st.caption(trend_detail)
+        with obs_cols[3]:
+            vol_label = f"{obs.volume.relative_volume:.1f}x"
+            st.metric("Relative Volume", vol_label)
+            vwap_str = obs.vwap_context.relationship.replace("_", " ").title()
+            st.caption(f"VWAP: {vwap_str} ({obs.vwap_context.pct_above:.0f}%)")
+
+        # Bias summary
+        bias_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(obs.bias, "gray")
+        st.markdown(f"**Observation Bias:** :{bias_color}[{obs.bias.upper()}]")
+        if obs.bias_reasons:
+            for reason in obs.bias_reasons[:5]:
+                st.caption(f"  - {reason}")
 
     # Live indicator snapshot
     tech = snap.technicals

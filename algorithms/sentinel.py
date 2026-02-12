@@ -5,6 +5,8 @@ Delegates directly to existing functions with zero modifications to V1 behavior.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from algorithms import register_algorithm
 from algorithms.base import TradingAlgorithm
 from core.options_models import (
@@ -16,6 +18,9 @@ from core.options_models import (
 from core.paper_trading_engine import evaluate_and_manage as _v1_evaluate_and_manage
 from core.paper_trading_models import PaperTradingState
 from core.trade_strategies import generate_trade_suggestions as _v1_generate_suggestions
+
+if TYPE_CHECKING:
+    from core.observation import ObservationSnapshot
 
 
 @register_algorithm
@@ -31,6 +36,7 @@ class SentinelAlgorithm(TradingAlgorithm):
         chain: OptionChainData,
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
+        observation: ObservationSnapshot | None = None,
     ) -> list[TradeSuggestion]:
         return _v1_generate_suggestions(analytics, technicals, chain)
 
@@ -43,6 +49,7 @@ class SentinelAlgorithm(TradingAlgorithm):
         analytics: OptionsAnalytics | None = None,
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
+        observation: ObservationSnapshot | None = None,
     ) -> PaperTradingState:
         return _v1_evaluate_and_manage(
             state, suggestions, chain,
