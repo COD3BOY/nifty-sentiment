@@ -246,3 +246,8 @@ See `docs/production-readiness.md` for the full gap analysis and prioritized che
 | 2026-02-12 | `core/options_engine.py` | Populate `FetchMeta` after chain/candle fetches in `fetch_snapshot()` | Wire source metadata into snapshot for downstream consumption |
 | 2026-02-12 | `ui/options_desk_tab.py` | Set `last_chain_fetch_ts`/`last_candle_fetch_ts` from snapshot metadata | Fix Data Freshness always showing "No data" for chain/candle (bug) |
 | 2026-02-12 | `ui/system_health_tab.py` | Add Live Technical Data section with per-indicator traffic-light table | No per-indicator freshness monitoring; operators couldn't verify primary data source |
+| 2026-02-12 | `core/paper_trading_models.py` | Add `trade_status_notes: list[str]` field to `PaperTradingState` | Carry per-cycle status notes from algorithm to UI |
+| 2026-02-12 | `algorithms/atlas.py` | Populate `trade_status_notes` with regime, stand-down reasons, and Phase 2 blocking reasons | Operators had no visibility into why Atlas was idle |
+| 2026-02-12 | `algorithms/optimus.py` | Populate `trade_status_notes` with VIX, IV percentile, credit regime blocks, and Phase 2 blocking reasons | Operators had no visibility into why Optimus was idle |
+| 2026-02-12 | `algorithms/jarvis.py` | Populate `trade_status_notes` with VIX, daily loss, and Phase 2 blocking reasons | Operators had no visibility into why Jarvis was idle |
+| 2026-02-12 | `ui/paper_trading_tab.py` | Add "Trade Status" expander with color-coded notes + Atlas dynamic params display | No dashboard visibility for trade rejection reasons |

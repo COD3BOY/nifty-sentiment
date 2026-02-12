@@ -253,6 +253,26 @@ def render_paper_trading_tab(
         else:
             st.info("No open positions. Enable **Auto-Trading** to automatically execute trade suggestions.")
 
+    # --- Trade Status Notes ---
+    if state.trade_status_notes:
+        with st.expander("Trade Status", expanded=not open_pos):
+            for note in state.trade_status_notes:
+                if any(kw in note.lower() for kw in ["blocked", "stand-down", "shutdown", "halted", "stale"]):
+                    st.markdown(f"- :orange[{note}]")
+                elif any(kw in note.lower() for kw in ["opened:"]):
+                    st.markdown(f"- :green[{note}]")
+                else:
+                    st.markdown(f"- {note}")
+
+            # For Atlas: show dynamic params if available
+            if state.vol_dynamic_params:
+                params = state.vol_dynamic_params
+                st.caption(
+                    f"Dynamic params: delta={params.get('strike_delta', 'N/A')}, "
+                    f"SL={params.get('sl_multiple', 'N/A')}x, "
+                    f"TP={params.get('take_profit', 'N/A')}"
+                )
+
     # --- Trade History ---
     st.divider()
     st.subheader("Trade History")

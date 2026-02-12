@@ -148,6 +148,8 @@ class PaperTradingState(BaseModel):
     vol_regime: str = ""                          # "sell_premium", "buy_premium", "stand_down"
     vol_snapshot_ts: float = 0.0                  # last vol snapshot fetch timestamp
     vol_dynamic_params: dict = Field(default_factory=dict)  # current dynamic params for display
+    # Trade status visibility (populated by each algorithm's evaluate_and_manage)
+    trade_status_notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod

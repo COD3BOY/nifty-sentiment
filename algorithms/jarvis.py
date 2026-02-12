@@ -652,6 +652,15 @@ class JarvisAlgorithm(TradingAlgorithm):
             lot_size = self.config.get("lot_size", 65)
         cfg = self.config
 
+        # Build trade status notes for dashboard visibility
+        notes: list[str] = []
+        vix = _get_vix_from_analytics(analytics)
+        if vix > 0:
+            notes.append(f"VIX (ATM IV proxy): {vix:.1f}")
+            vix_threshold = cfg.get("vix_spread_only_threshold", 28.0)
+            if vix > vix_threshold:
+                notes.append(f"Naked strategies blocked: VIX {vix:.1f} > {vix_threshold}")
+
         # --- Phase 1: Manage existing positions ---
         still_open: list[PaperPosition] = []
         new_records: list[TradeRecord] = []
@@ -755,25 +764,37 @@ class JarvisAlgorithm(TradingAlgorithm):
             session_pnl = (state.initial_capital + state.net_realized_pnl) - state.session_start_capital
             if session_pnl <= -(state.session_start_capital * daily_loss_pct / 100):
                 logger.warning("V2 SHUTDOWN: daily loss %.0f > %.1f%%", abs(session_pnl), daily_loss_pct)
-                return state
+                notes.append(f"Blocked: Daily loss shutdown (loss {abs(session_pnl):.0f} > {daily_loss_pct}%)")
+                return state.model_copy(update={"trade_status_notes": notes})
 
         # --- Phase 2: Open new positions ---
-        if not state.is_auto_trading or not suggestions or not chain:
-            return state
+        if not state.is_auto_trading:
+            notes.append("Auto-trading is OFF")
+            return state.model_copy(update={"trade_status_notes": notes})
+        if not suggestions:
+            notes.append("No trade suggestions available")
+            return state.model_copy(update={"trade_status_notes": notes})
+        if not chain:
+            notes.append("No option chain data available")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         if state.trading_halted:
             logger.info("V2: Trading halted — skipping new positions")
-            return state
+            notes.append(f"Blocked: Trading halted ({state.consecutive_losses} consecutive losses)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         # Data staleness guard
         if technicals and technicals.data_staleness_minutes > 20:
-            return state
+            notes.append(f"Blocked: Data stale ({technicals.data_staleness_minutes:.0f} min > 20 min limit)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         # Cooldown
         now_ts = _time.time()
         if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < 60:
-            return state
+            notes.append("Trade cooldown active (60s between trades)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
+        opened_trade = False
         for suggestion in suggestions:
             # Skip rejected suggestions
             if suggestion.rejection_reason:
@@ -785,14 +806,17 @@ class JarvisAlgorithm(TradingAlgorithm):
             gate_reason = _check_global_gates(state, suggestion, chain, analytics, cfg)
             if gate_reason:
                 logger.info("V2 GATE BLOCKED: %s — %s", suggestion.strategy.value, gate_reason)
+                notes.append(f"Blocked {suggestion.strategy.value}: {gate_reason}")
                 continue
 
             # Skip duplicates
             held = {p.strategy for p in state.open_positions if p.status == PositionStatus.OPEN}
             if suggestion.strategy.value in held:
+                notes.append(f"Blocked {suggestion.strategy.value}: already holding same strategy")
                 continue
 
             if state.capital_remaining <= 0:
+                notes.append("Blocked: no capital remaining")
                 break
 
             # Section 5: Position sizing
@@ -802,6 +826,7 @@ class JarvisAlgorithm(TradingAlgorithm):
             )
             if size_reject:
                 logger.info("V2 SIZING REJECTED: %s — %s", suggestion.strategy.value, size_reject)
+                notes.append(f"Blocked {suggestion.strategy.value}: sizing — {size_reject}")
                 continue
 
             # Open position using the Jarvis lot count
@@ -828,6 +853,11 @@ class JarvisAlgorithm(TradingAlgorithm):
                 "open_positions": state.open_positions + [position],
                 "last_trade_opened_ts": _time.time(),
             })
+            notes.append(f"Opened: {position.strategy} ({position.lots} lots)")
+            opened_trade = True
             break  # max 1 trade per cycle
 
-        return state
+        if not opened_trade and not any("Opened:" in n for n in notes):
+            notes.append("All suggestions blocked by gates/sizing")
+
+        return state.model_copy(update={"trade_status_notes": notes})

@@ -1171,11 +1171,28 @@ class AtlasAlgorithm(TradingAlgorithm):
         regime = _classify_regime(vol, cfg)
         dyn_params = _get_all_dynamic_params(vol, cfg)
 
-        # Store regime + dynamic params on state
+        # Build trade status notes for dashboard visibility
+        notes: list[str] = []
+        notes.append(f"Regime: {regime} (pRV={vol.p_rv:.2f}, pVoV={vol.p_vov:.2f}, pVRP={vol.p_vrp:.2f})")
+
+        if regime == "stand_down":
+            if vol.p_vov >= cfg.get("standdown_vov_min", 0.85):
+                notes.append(f"Stand-down: VoV percentile {vol.p_vov:.2f} >= {cfg.get('standdown_vov_min', 0.85)}")
+            elif vol.p_rv >= cfg.get("standdown_rv_min", 0.90):
+                notes.append(f"Stand-down: RV percentile {vol.p_rv:.2f} >= {cfg.get('standdown_rv_min', 0.90)}")
+            else:
+                notes.append(f"Stand-down: VRP percentile {vol.p_vrp:.2f} in ambiguous zone")
+        elif regime == "sell_premium":
+            notes.append("Sell premium: looking for iron condors and hedged strangles")
+        elif regime == "buy_premium":
+            notes.append("Buy premium: looking for debit spreads (needs breakout confirmation)")
+
+        # Store regime + dynamic params + notes on state
         state = state.model_copy(update={
             "vol_regime": regime,
             "vol_snapshot_ts": _time.time(),
             "vol_dynamic_params": dyn_params,
+            "trade_status_notes": notes,
         })
 
         # --- Phase 1: Manage existing positions ---
@@ -1302,32 +1319,45 @@ class AtlasAlgorithm(TradingAlgorithm):
             daily_pnl = account_value - state.daily_start_capital
             if daily_pnl <= -(state.daily_start_capital * daily_loss_pct / 100):
                 logger.warning("ATLAS SHUTDOWN: daily loss %.0f > %.1f%%", abs(daily_pnl), daily_loss_pct)
-                return state
+                notes.append(f"Blocked: Daily loss shutdown (loss {abs(daily_pnl):.0f} > {daily_loss_pct}%)")
+                return state.model_copy(update={"trade_status_notes": notes})
 
         weekly_dd_pct = cfg.get("weekly_drawdown_shutdown_pct", 2.0)
         if state.weekly_start_capital > 0:
             weekly_pnl = account_value - state.weekly_start_capital
             if weekly_pnl <= -(state.weekly_start_capital * weekly_dd_pct / 100):
                 logger.warning("ATLAS SHUTDOWN: weekly drawdown %.0f > %.1f%%", abs(weekly_pnl), weekly_dd_pct)
-                return state
+                notes.append(f"Blocked: Weekly drawdown shutdown (loss {abs(weekly_pnl):.0f} > {weekly_dd_pct}%)")
+                return state.model_copy(update={"trade_status_notes": notes})
 
         # --- Phase 2: Open new positions ---
-        if not state.is_auto_trading or not suggestions or not chain:
-            return state
+        if not state.is_auto_trading:
+            notes.append("Auto-trading is OFF")
+            return state.model_copy(update={"trade_status_notes": notes})
+        if not suggestions:
+            notes.append("No trade suggestions available (regime may block all strategies)")
+            return state.model_copy(update={"trade_status_notes": notes})
+        if not chain:
+            notes.append("No option chain data available")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         if state.trading_halted:
             logger.info("ATLAS: Trading halted — skipping new positions")
-            return state
+            notes.append(f"Blocked: Trading halted ({state.consecutive_losses} consecutive losses)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         # Data staleness guard
         if technicals and technicals.data_staleness_minutes > 20:
-            return state
+            notes.append(f"Blocked: Data stale ({technicals.data_staleness_minutes:.0f} min > 20 min limit)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         # Cooldown
         now_ts = _time.time()
         if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < 60:
-            return state
+            notes.append("Trade cooldown active (60s between trades)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
+        opened_trade = False
         for suggestion in suggestions:
             if suggestion.rejection_reason:
                 continue
@@ -1338,26 +1368,31 @@ class AtlasAlgorithm(TradingAlgorithm):
             gate_reason = _check_atlas_gates(state, suggestion, chain, cfg)
             if gate_reason:
                 logger.info("ATLAS GATE BLOCKED: %s — %s", suggestion.strategy.value, gate_reason)
+                notes.append(f"Blocked {suggestion.strategy.value}: {gate_reason}")
                 continue
 
             # Portfolio structure
             struct_reason = _check_atlas_portfolio_structure(state, suggestion, cfg)
             if struct_reason:
                 logger.info("ATLAS STRUCTURE BLOCKED: %s — %s", suggestion.strategy.value, struct_reason)
+                notes.append(f"Blocked {suggestion.strategy.value}: {struct_reason}")
                 continue
 
             # Skip duplicates
             held = {p.strategy for p in state.open_positions if p.status == PositionStatus.OPEN}
             if suggestion.strategy.value in held:
+                notes.append(f"Blocked {suggestion.strategy.value}: already holding same strategy")
                 continue
 
             if state.capital_remaining <= 0:
+                notes.append("Blocked: no capital remaining")
                 break
 
             # Dynamic position sizing
             vol_lots, size_reject = _compute_atlas_lots(suggestion, state, vol, cfg)
             if size_reject:
                 logger.info("ATLAS SIZING REJECTED: %s — %s", suggestion.strategy.value, size_reject)
+                notes.append(f"Blocked {suggestion.strategy.value}: sizing — {size_reject}")
                 continue
 
             # Open position
@@ -1391,6 +1426,11 @@ class AtlasAlgorithm(TradingAlgorithm):
                 "last_trade_opened_ts": _time.time(),
                 "allocation_tracker": tracker,
             })
+            notes.append(f"Opened: {position.strategy} ({position.lots} lots)")
+            opened_trade = True
             break  # max 1 trade per cycle
 
-        return state
+        if not opened_trade and not any("Opened:" in n for n in notes):
+            notes.append("All suggestions blocked by gates/structure/sizing")
+
+        return state.model_copy(update={"trade_status_notes": notes})

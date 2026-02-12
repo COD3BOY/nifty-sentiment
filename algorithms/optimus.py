@@ -1200,6 +1200,24 @@ class OptimusAlgorithm(TradingAlgorithm):
         if analytics and technicals and vix is not None:
             _, is_half_size = _check_credit_regime(analytics, technicals, vix, cfg)
 
+        # Build trade status notes for dashboard visibility
+        notes: list[str] = []
+        if vix is not None:
+            notes.append(f"VIX: {vix:.1f}")
+            vix_min = cfg.get("vix_no_credit_below", 14.0)
+            vix_half = cfg.get("vix_half_size_above", 28.0)
+            if vix < vix_min:
+                notes.append(f"Credit strategies blocked: VIX {vix:.1f} < minimum {vix_min}")
+            elif vix > vix_half:
+                notes.append(f"Half-size mode: VIX {vix:.1f} > {vix_half}")
+        else:
+            notes.append("VIX: unavailable")
+        if analytics:
+            notes.append(f"IV percentile: {analytics.iv_percentile:.1f}")
+            min_iv_pct = cfg.get("credit_min_iv_percentile", 55.0)
+            if analytics.iv_percentile < min_iv_pct:
+                notes.append(f"Credit blocked: IV percentile {analytics.iv_percentile:.1f} < {min_iv_pct}")
+
         # --- Phase 1: Manage existing positions ---
         still_open: list[PaperPosition] = []
         new_records: list[TradeRecord] = []
@@ -1312,32 +1330,45 @@ class OptimusAlgorithm(TradingAlgorithm):
             daily_pnl = account_value - state.daily_start_capital
             if daily_pnl <= -(state.daily_start_capital * daily_loss_pct / 100):
                 logger.warning("OPTIMUS SHUTDOWN: daily loss %.0f > %.1f%%", abs(daily_pnl), daily_loss_pct)
-                return state
+                notes.append(f"Blocked: Daily loss shutdown (loss {abs(daily_pnl):.0f} > {daily_loss_pct}%)")
+                return state.model_copy(update={"trade_status_notes": notes})
 
         weekly_dd_pct = cfg.get("weekly_drawdown_shutdown_pct", 2.0)
         if state.weekly_start_capital > 0:
             weekly_pnl = account_value - state.weekly_start_capital
             if weekly_pnl <= -(state.weekly_start_capital * weekly_dd_pct / 100):
                 logger.warning("OPTIMUS SHUTDOWN: weekly drawdown %.0f > %.1f%%", abs(weekly_pnl), weekly_dd_pct)
-                return state
+                notes.append(f"Blocked: Weekly drawdown shutdown (loss {abs(weekly_pnl):.0f} > {weekly_dd_pct}%)")
+                return state.model_copy(update={"trade_status_notes": notes})
 
         # --- Phase 2: Open new positions ---
-        if not state.is_auto_trading or not suggestions or not chain:
-            return state
+        if not state.is_auto_trading:
+            notes.append("Auto-trading is OFF")
+            return state.model_copy(update={"trade_status_notes": notes})
+        if not suggestions:
+            notes.append("No trade suggestions available")
+            return state.model_copy(update={"trade_status_notes": notes})
+        if not chain:
+            notes.append("No option chain data available")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         if state.trading_halted:
             logger.info("OPTIMUS: Trading halted — skipping new positions")
-            return state
+            notes.append(f"Blocked: Trading halted ({state.consecutive_losses} consecutive losses)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         # Data staleness guard
         if technicals and technicals.data_staleness_minutes > 20:
-            return state
+            notes.append(f"Blocked: Data stale ({technicals.data_staleness_minutes:.0f} min > 20 min limit)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
         # Cooldown
         now_ts = _time.time()
         if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < 60:
-            return state
+            notes.append("Trade cooldown active (60s between trades)")
+            return state.model_copy(update={"trade_status_notes": notes})
 
+        opened_trade = False
         for suggestion in suggestions:
             if suggestion.rejection_reason:
                 continue
@@ -1348,26 +1379,31 @@ class OptimusAlgorithm(TradingAlgorithm):
             gate_reason = _check_optimus_gates(state, suggestion, chain, cfg)
             if gate_reason:
                 logger.info("OPTIMUS GATE BLOCKED: %s — %s", suggestion.strategy.value, gate_reason)
+                notes.append(f"Blocked {suggestion.strategy.value}: {gate_reason}")
                 continue
 
             # Portfolio structure
             struct_reason = _check_portfolio_structure(state, suggestion, cfg)
             if struct_reason:
                 logger.info("OPTIMUS STRUCTURE BLOCKED: %s — %s", suggestion.strategy.value, struct_reason)
+                notes.append(f"Blocked {suggestion.strategy.value}: {struct_reason}")
                 continue
 
             # Skip duplicates
             held = {p.strategy for p in state.open_positions if p.status == PositionStatus.OPEN}
             if suggestion.strategy.value in held:
+                notes.append(f"Blocked {suggestion.strategy.value}: already holding same strategy")
                 continue
 
             if state.capital_remaining <= 0:
+                notes.append("Blocked: no capital remaining")
                 break
 
             # Hedge position sizing
             hedge_lots, size_reject = _compute_optimus_lots(suggestion, state, cfg, is_half_size)
             if size_reject:
                 logger.info("OPTIMUS SIZING REJECTED: %s — %s", suggestion.strategy.value, size_reject)
+                notes.append(f"Blocked {suggestion.strategy.value}: sizing — {size_reject}")
                 continue
 
             # Open position
@@ -1401,6 +1437,11 @@ class OptimusAlgorithm(TradingAlgorithm):
                 "last_trade_opened_ts": _time.time(),
                 "allocation_tracker": tracker,
             })
+            notes.append(f"Opened: {position.strategy} ({position.lots} lots)")
+            opened_trade = True
             break  # max 1 trade per cycle
 
-        return state
+        if not opened_trade and not any("Opened:" in n for n in notes):
+            notes.append("All suggestions blocked by gates/structure/sizing")
+
+        return state.model_copy(update={"trade_status_notes": notes})
