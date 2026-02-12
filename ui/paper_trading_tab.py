@@ -283,12 +283,12 @@ def render_paper_trading_tab(
         # --- EOD Report Downloads ---
         st.divider()
         st.subheader("EOD Report")
-        _render_eod_downloads(state)
+        _render_eod_downloads(state, algo_name)
     else:
         st.caption("No trades yet. History will appear here after positions are closed.")
 
 
-def _render_eod_downloads(state: PaperTradingState) -> None:
+def _render_eod_downloads(state: PaperTradingState, algo_name: str = "sentinel") -> None:
     """Render download buttons for the end-of-day trade report."""
     from analyzers.eod_report import generate_eod_report, render_json, render_markdown
 
@@ -302,6 +302,7 @@ def _render_eod_downloads(state: PaperTradingState) -> None:
             data=render_markdown(report),
             file_name=f"nifty_trades_{date_str}.md",
             mime="text/markdown",
+            key=f"eod_md_{algo_name}",
         )
     with col2:
         st.download_button(
@@ -309,6 +310,7 @@ def _render_eod_downloads(state: PaperTradingState) -> None:
             data=render_json(report),
             file_name=f"nifty_trades_{date_str}.json",
             mime="application/json",
+            key=f"eod_json_{algo_name}",
         )
 
 
