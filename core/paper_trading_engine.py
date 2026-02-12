@@ -881,9 +881,16 @@ def save_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
         except Exception as e:
             _logger.warning("Failed to create state backup: %s", e)
 
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(state.model_dump_json(indent=2))
-    tmp.replace(path)  # atomic on POSIX
+    import os
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(state.model_dump_json(indent=2))
+        Path(tmp_path).replace(path)  # atomic on POSIX
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
 
 
 def load_state(algo_name: str = "sentinel") -> PaperTradingState | None:
