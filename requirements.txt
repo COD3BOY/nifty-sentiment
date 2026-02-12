@@ -10,7 +10,7 @@ anthropic==0.79.0
 plotly==6.5.2
 beautifulsoup4==4.12.2
 requests==2.32.5
-aiohttp==3.8.4
+aiohttp>=3.9.0
 kiteconnect==5.0.1
 nsepython==2.97
 numpy==2.2.6
