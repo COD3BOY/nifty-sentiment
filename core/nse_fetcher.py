@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from datetime import datetime
 
 from core.config import load_config
@@ -10,6 +11,10 @@ from core.iv_calculator import compute_iv_for_chain
 from core.options_models import OptionChainData, StrikeData
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache for instruments list (changes at most once/day)
+_instruments_cache: dict[str, tuple[list, float]] = {}
+_INSTRUMENTS_TTL = 600  # 10 minutes
 
 
 class KiteOptionChainFetcher:
@@ -52,14 +57,22 @@ class KiteOptionChainFetcher:
         if kite is None:
             raise ValueError("Kite Connect credentials not configured (KITE_API_KEY / KITE_ACCESS_TOKEN)")
 
-        # 1. Get all NFO instruments and filter for this symbol
-        cb = kite_guard_sync()
-        try:
-            all_instruments = kite.instruments("NFO")
-            cb.record_success()
-        except Exception:
-            cb.record_failure()
-            raise
+        # 1. Get all NFO instruments (cached — changes at most once/day)
+        cache_key = "NFO"
+        cached = _instruments_cache.get(cache_key)
+        if cached and (time.time() - cached[1]) < _INSTRUMENTS_TTL:
+            all_instruments = cached[0]
+            logger.debug("Using cached NFO instruments (%d items)", len(all_instruments))
+        else:
+            cb = kite_guard_sync()
+            try:
+                all_instruments = kite.instruments("NFO")
+                cb.record_success()
+                _instruments_cache[cache_key] = (all_instruments, time.time())
+                logger.info("Fetched NFO instruments from Kite (%d items)", len(all_instruments))
+            except Exception:
+                cb.record_failure()
+                raise
         option_instruments = [
             inst for inst in all_instruments
             if inst["name"] == symbol

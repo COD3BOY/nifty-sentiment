@@ -15,13 +15,14 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def _traffic_light(meta, label: str) -> tuple[str, str, str]:
+def _traffic_light(meta) -> tuple[str, str, str]:
     """Return (icon, status_text, source) for a FetchMeta-backed indicator.
 
-    Traffic-light rules:
-    - Green:  < 60s AND primary source
-    - Yellow: 60-90s AND primary source
-    - Red:    > 90s (any source), fallback source, or no data
+    Traffic-light rules (thresholds account for 60s auto-refresh interval —
+    System Health tab renders before Options Desk, so data is always ~60s old):
+    - Green:  < 120s AND primary source (within 2 refresh cycles)
+    - Yellow: 120-300s AND primary source (missed 2-5 cycles)
+    - Red:    > 300s (any source), fallback source, or no data
     """
     if meta is None:
         return ("🔴", "No data", "—")
@@ -29,13 +30,18 @@ def _traffic_light(meta, label: str) -> tuple[str, str, str]:
     age = time.time() - meta.fetch_ts
     source = meta.source
 
+    if age < 60:
+        age_text = f"{int(age)}s ago"
+    else:
+        age_text = f"{int(age // 60)}m {int(age % 60)}s ago"
+
     if not meta.is_primary:
-        return ("🔴", f"{int(age)}s ago", source)
-    if age > 90:
-        return ("🔴", f"{int(age)}s ago", source)
-    if age > 60:
-        return ("🟡", f"{int(age)}s ago", source)
-    return ("🟢", f"{int(age)}s ago", source)
+        return ("🔴", age_text, source)
+    if age > 300:
+        return ("🔴", age_text, source)
+    if age > 120:
+        return ("🟡", age_text, source)
+    return ("🟢", age_text, source)
 
 
 def _render_live_technical_table() -> None:
@@ -60,7 +66,7 @@ def _render_live_technical_table() -> None:
     # --- Candle-derived indicators ---
     tech = snap.technicals
     if tech and candle_meta:
-        icon, age_text, source = _traffic_light(candle_meta, "candle")
+        icon, age_text, source = _traffic_light(candle_meta)
         candle_rows = [
             ("Spot Price", f"{tech.spot:,.1f}"),
             ("VWAP", f"{tech.vwap:,.1f}"),
@@ -85,7 +91,7 @@ def _render_live_technical_table() -> None:
     # --- Chain-derived indicators ---
     anl = snap.analytics
     if anl and chain_meta:
-        icon, age_text, source = _traffic_light(chain_meta, "chain")
+        icon, age_text, source = _traffic_light(chain_meta)
         chain_rows = [
             ("PCR", f"{anl.pcr:.3f}"),
             ("ATM IV", f"{anl.atm_iv:.1f}%"),
