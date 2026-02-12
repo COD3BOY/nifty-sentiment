@@ -121,6 +121,33 @@ def render_options_desk_tab() -> None:
         st.warning(err)
 
     # ================================================================
+    # MORNING CONTEXT (top — always visible when observation is complete)
+    # ================================================================
+    obs = getattr(snap, "observation", None)
+    if obs and obs.is_complete and obs.bars_collected > 0:
+        st.divider()
+        st.subheader("Morning Context")
+        st.caption("9:15–10:00 observation window")
+        mc_cols = st.columns(5)
+        with mc_cols[0]:
+            or_str = f"{obs.opening_range.range_points:.0f} pts ({obs.opening_range.range_pct:.2f}%)"
+            st.metric("Opening Range", or_str)
+            if obs.opening_range.breakout_direction:
+                st.caption(f"Breakout {obs.opening_range.breakout_direction} ({obs.opening_range.breakout_distance_pct:.2f}%)")
+        with mc_cols[1]:
+            gap_str = f"{obs.gap.gap_pct:+.2f}%" if obs.gap.direction != "flat" else "Flat"
+            st.metric("Gap", gap_str)
+        with mc_cols[2]:
+            trend_dir = obs.initial_trend.direction.replace('_', ' ').title()
+            st.metric("Trend", trend_dir)
+            st.caption(f"{obs.initial_trend.move_pct:+.2f}% ({obs.initial_trend.strength})")
+        with mc_cols[3]:
+            st.metric("Volume", f"{obs.volume.relative_volume:.1f}x ({obs.volume.classification})")
+        with mc_cols[4]:
+            bias_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(obs.bias, "gray")
+            st.metric("Bias", obs.bias.upper())
+
+    # ================================================================
     # MARKET PULSE (top bar)
     # ================================================================
     st.divider()
@@ -187,27 +214,6 @@ def render_options_desk_tab() -> None:
     if is_warmup:
         _render_warmup_view(snap, secs_remaining, entry_time)
     else:
-        # Post-warmup: show compact morning context if observation is complete
-        obs = getattr(snap, "observation", None)
-        if obs and obs.is_complete and obs.bars_collected > 0:
-            with st.expander("Morning Context (9:15-10:00 observation)", expanded=False):
-                mc_cols = st.columns(5)
-                with mc_cols[0]:
-                    or_str = f"{obs.opening_range.range_points:.0f} pts ({obs.opening_range.range_pct:.2f}%)"
-                    st.metric("Opening Range", or_str)
-                with mc_cols[1]:
-                    gap_str = f"{obs.gap.gap_pct:+.2f}%" if obs.gap.direction != "flat" else "Flat"
-                    st.metric("Gap", gap_str)
-                with mc_cols[2]:
-                    st.metric("Trend", f"{obs.initial_trend.direction.replace('_', ' ').title()} ({obs.initial_trend.strength})")
-                with mc_cols[3]:
-                    st.metric("Volume", f"{obs.volume.relative_volume:.1f}x ({obs.volume.classification})")
-                with mc_cols[4]:
-                    bias_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(obs.bias, "gray")
-                    st.metric("Bias", obs.bias.upper())
-                if obs.opening_range.breakout_direction:
-                    st.caption(f"OR breakout: {obs.opening_range.breakout_direction} ({obs.opening_range.breakout_distance_pct:.2f}%)")
-
         # Get top high-confidence suggestion per algorithm from session state
         from algorithms import get_algorithm_registry
         registry = get_algorithm_registry()
