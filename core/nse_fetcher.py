@@ -2,8 +2,10 @@
 
 import logging
 import os
+import pickle
 import time
 from datetime import datetime
+from pathlib import Path
 
 from core.config import load_config
 from core.error_types import AuthenticationError, DataFetchError
@@ -12,9 +14,53 @@ from core.options_models import OptionChainData, StrikeData
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for instruments list (changes at most once/day)
+# Module-level + disk cache for instruments list (changes at most once/day)
 _instruments_cache: dict[str, tuple[list, float]] = {}
-_INSTRUMENTS_TTL = 600  # 10 minutes
+_INSTRUMENTS_TTL = 1800  # 30 minutes
+_INSTRUMENTS_DISK_CACHE = Path("data/nfo_instruments_cache.pkl")
+
+
+def _get_cached_instruments() -> list | None:
+    """Return instruments from memory cache (if fresh) or disk cache (if fresh)."""
+    cached = _instruments_cache.get("NFO")
+    if cached and (time.time() - cached[1]) < _INSTRUMENTS_TTL:
+        return cached[0]
+    # Try disk cache
+    try:
+        if _INSTRUMENTS_DISK_CACHE.exists():
+            data = pickle.loads(_INSTRUMENTS_DISK_CACHE.read_bytes())
+            if time.time() - data["ts"] < _INSTRUMENTS_TTL:
+                _instruments_cache["NFO"] = (data["instruments"], data["ts"])
+                logger.debug("Loaded NFO instruments from disk cache (%d items)", len(data["instruments"]))
+                return data["instruments"]
+    except Exception:
+        pass
+    return None
+
+
+def _get_stale_instruments() -> list | None:
+    """Return instruments from any cache, ignoring TTL (emergency fallback)."""
+    cached = _instruments_cache.get("NFO")
+    if cached:
+        return cached[0]
+    try:
+        if _INSTRUMENTS_DISK_CACHE.exists():
+            data = pickle.loads(_INSTRUMENTS_DISK_CACHE.read_bytes())
+            return data["instruments"]
+    except Exception:
+        pass
+    return None
+
+
+def _put_instruments_cache(instruments: list) -> None:
+    """Store instruments in both memory and disk cache."""
+    now = time.time()
+    _instruments_cache["NFO"] = (instruments, now)
+    try:
+        _INSTRUMENTS_DISK_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _INSTRUMENTS_DISK_CACHE.write_bytes(pickle.dumps({"instruments": instruments, "ts": now}))
+    except Exception as e:
+        logger.warning("Failed to write instruments disk cache: %s", e)
 
 
 class KiteOptionChainFetcher:
@@ -57,22 +103,24 @@ class KiteOptionChainFetcher:
         if kite is None:
             raise ValueError("Kite Connect credentials not configured (KITE_API_KEY / KITE_ACCESS_TOKEN)")
 
-        # 1. Get all NFO instruments (cached — changes at most once/day)
-        cache_key = "NFO"
-        cached = _instruments_cache.get(cache_key)
-        if cached and (time.time() - cached[1]) < _INSTRUMENTS_TTL:
-            all_instruments = cached[0]
-            logger.debug("Using cached NFO instruments (%d items)", len(all_instruments))
-        else:
+        # 1. Get all NFO instruments (memory → disk → API, with stale fallback)
+        all_instruments = _get_cached_instruments()
+        if all_instruments is None:
             cb = kite_guard_sync()
             try:
                 all_instruments = kite.instruments("NFO")
                 cb.record_success()
-                _instruments_cache[cache_key] = (all_instruments, time.time())
+                _put_instruments_cache(all_instruments)
                 logger.info("Fetched NFO instruments from Kite (%d items)", len(all_instruments))
-            except Exception:
+            except Exception as inst_exc:
                 cb.record_failure()
-                raise
+                # Fall back to stale cache (memory or disk) rather than failing
+                stale = _get_stale_instruments()
+                if stale is not None:
+                    all_instruments = stale
+                    logger.warning("instruments() failed (%s), using stale cache", inst_exc)
+                else:
+                    raise
         option_instruments = [
             inst for inst in all_instruments
             if inst["name"] == symbol
