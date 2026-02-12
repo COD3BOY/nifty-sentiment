@@ -60,7 +60,7 @@ def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
             logger.info(
                 "Loaded %s state: %d trades, %d open positions, capital=%.0f",
                 algo_name, len(saved.trade_log), len(saved.open_positions),
-                saved.current_capital,
+                saved.capital_remaining,
             )
             st.session_state[key] = saved
         else:
