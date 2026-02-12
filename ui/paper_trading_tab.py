@@ -218,7 +218,7 @@ def render_paper_trading_tab(
         with hdr_col:
             st.subheader(f"Open Positions ({len(open_pos)})")
         with btn_col:
-            if len(open_pos) > 1 and st.button("Close All", key=f"close_all_btn_{algo_name}", type="secondary", use_container_width=True):
+            if len(open_pos) > 1 and st.button("Close All", key=f"close_all_btn_{algo_name}", type="secondary", width="stretch"):
                 new_records = []
                 added_realized = 0.0
                 added_costs = 0.0
@@ -345,7 +345,7 @@ def _render_open_position_card(
                 "Current LTP": f"\u20b9{leg.current_ltp:.1f}",
                 "Leg P&L": _fmt_pnl(leg.unrealized_pnl),
             })
-        st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(leg_rows), width="stretch", hide_index=True)
 
         # Entry reasoning
         if pos.entry_context and isinstance(pos.entry_context, dict):
@@ -367,7 +367,7 @@ def _render_open_position_card(
                 unsafe_allow_html=True,
             )
         with btn_col:
-            if st.button("Close", key=f"close_{algo_name}_{pos.id}", type="secondary", use_container_width=True):
+            if st.button("Close", key=f"close_{algo_name}_{pos.id}", type="secondary", width="stretch"):
                 _, record = close_position(
                     pos, PositionStatus.CLOSED_MANUAL,
                     technicals=technicals, analytics=analytics, chain=chain,
@@ -475,7 +475,7 @@ def _render_trade_history(state: PaperTradingState) -> None:
                     "P&L": _fmt_pnl(leg.get("pnl", 0)),
                 })
             if leg_rows:
-                st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(leg_rows), width="stretch", hide_index=True)
 
             # Entry & exit context
             if t.entry_context and isinstance(t.entry_context, dict):

@@ -179,7 +179,7 @@ with tab_premarket:
     with _h2:
         components.html(_live_clock_html(), height=55)
     with _h3:
-        if st.button("Refresh Pre-Market", key="refresh_premarket", type="primary", use_container_width=True):
+        if st.button("Refresh Pre-Market", key="refresh_premarket", type="primary", width="stretch"):
             with st.spinner("Fetching pre-market sentiment..."):
                 st.session_state.pre_market_sentiment = run_async(engine.compute_sentiment(mode="pre_market"))
                 engine.update_market_actuals()
@@ -400,7 +400,7 @@ with tab_premarket:
                 },
             ))
             fig.update_layout(height=300, margin=dict(t=60, b=20, l=30, r=30))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with col_factors:
             st.markdown("**Bullish Factors**")

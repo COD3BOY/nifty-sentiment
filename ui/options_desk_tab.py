@@ -393,7 +393,7 @@ def _render_expandable_details(snap) -> None:
                     "PE ChgOI": f"{s.pe_change_in_oi:+,.0f}",
                     "PE OI": f"{s.pe_oi:,.0f}",
                 })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     # Change-in-OI buildup analysis
     if chain and chain.strikes:
