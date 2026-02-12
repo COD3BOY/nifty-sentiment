@@ -143,7 +143,11 @@ class SentimentDatabase:
             cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
-        Base.metadata.create_all(self.engine)
+        try:
+            Base.metadata.create_all(self.engine)
+        except Exception:
+            # Race condition: another worker already created the tables
+            pass
         self.SessionLocal = sessionmaker(bind=self.engine)
 
     def save_aggregated_sentiment(self, sentiment: AggregatedSentiment) -> int:
