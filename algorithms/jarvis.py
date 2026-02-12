@@ -711,7 +711,7 @@ class JarvisAlgorithm(TradingAlgorithm):
                 )
                 logger.info(
                     "V2 CLOSED: %s | reason=%s | pnl=%.2f",
-                    record.strategy, exit_reason.value, record.net_pnl,
+                    record.strategy, exit_reason.value if hasattr(exit_reason, 'value') else exit_reason, record.net_pnl,
                 )
                 new_records.append(record)
                 added_realized += record.realized_pnl

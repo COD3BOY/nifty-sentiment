@@ -216,7 +216,7 @@ def criticize_trade(
 - Net P&L (after costs): {record.net_pnl:,.2f}
 - Execution Cost: {record.execution_cost:,.2f}
 - Duration: {duration_mins} minutes
-- Exit Reason: {record.exit_reason.value}
+- Exit Reason: {record.exit_reason}
 - Max Drawdown: {record.max_drawdown:,.2f}
 - Max Favorable: {record.max_favorable:,.2f}
 - Spot at Entry: {record.spot_at_entry:.2f}

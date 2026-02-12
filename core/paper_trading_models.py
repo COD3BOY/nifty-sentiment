@@ -12,7 +12,7 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 def _now_ist() -> datetime:
     return datetime.now(_IST)
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class StrategyType(str, Enum):
@@ -61,6 +61,8 @@ class PositionLeg(BaseModel):
 class PaperPosition(BaseModel):
     """Multi-leg paper position."""
 
+    model_config = ConfigDict(use_enum_values=True)
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     strategy: str
     strategy_type: StrategyType
@@ -93,6 +95,8 @@ class PaperPosition(BaseModel):
 
 class TradeRecord(BaseModel):
     """Immutable record of a closed trade."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     id: str
     strategy: str

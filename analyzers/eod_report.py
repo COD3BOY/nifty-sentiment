@@ -93,7 +93,7 @@ def generate_eod_report(
             "lots": t.lots,
             "entry_time": t.entry_time.astimezone(_IST).isoformat(),
             "exit_time": t.exit_time.astimezone(_IST).isoformat(),
-            "exit_reason": t.exit_reason.value if hasattr(t.exit_reason, "value") else str(t.exit_reason),
+            "exit_reason": str(t.exit_reason),
             "realized_pnl": t.realized_pnl,
             "execution_cost": t.execution_cost,
             "net_pnl": t.net_pnl,

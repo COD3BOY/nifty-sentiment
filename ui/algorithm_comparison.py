@@ -47,7 +47,7 @@ def render_algorithm_comparison(algo_names: list[str], algo_display_names: dict[
         ("Total P&L", lambda s: _fmt_pnl(s.total_pnl)),
         ("Net Realized", lambda s: _fmt_pnl(s.net_realized_pnl)),
         ("Total Costs", lambda s: f"\u20b9{s.total_execution_costs:,.0f}"),
-        ("Open Positions", lambda s: str(len([p for p in s.open_positions if p.status.value == "open"]))),
+        ("Open Positions", lambda s: str(len([p for p in s.open_positions if p.status == "open"]))),
         ("Margin in Use", lambda s: f"\u20b9{s.margin_in_use:,.0f}"),
     ]
 
