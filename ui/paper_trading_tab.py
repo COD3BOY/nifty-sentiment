@@ -10,7 +10,7 @@ import streamlit as st
 
 from core.config import load_config
 from core.options_models import OptionChainData, OptionsAnalytics, TechnicalIndicators, TradeSuggestion
-from core.paper_trading_engine import close_position, evaluate_and_manage, load_state, save_state
+from core.paper_trading_engine import close_position, evaluate_and_manage, force_save_state, load_state, save_state
 from core.paper_trading_models import (
     PaperPosition,
     PaperTradingState,
@@ -57,8 +57,18 @@ def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
     if key not in st.session_state:
         saved = load_state(algo_name=algo_name)
         if saved is not None:
+            logger.info(
+                "Loaded %s state: %d trades, %d open positions, capital=%.0f",
+                algo_name, len(saved.trade_log), len(saved.open_positions),
+                saved.current_capital,
+            )
             st.session_state[key] = saved
         else:
+            logger.warning(
+                "No saved state for %s — creating fresh state. "
+                "Check data/ for .bak files if this is unexpected.",
+                algo_name,
+            )
             cfg = load_config().get("paper_trading", {})
             st.session_state[key] = PaperTradingState(
                 initial_capital=_initial_capital(algo_name),
@@ -70,6 +80,12 @@ def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
 def _set_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
     st.session_state[_state_key(algo_name)] = state
     save_state(state, algo_name=algo_name)
+
+
+def _force_set_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
+    """Set state bypassing empty-state guard (for intentional resets)."""
+    st.session_state[_state_key(algo_name)] = state
+    force_save_state(state, algo_name=algo_name)
 
 
 def _format_context_indicators(ctx: dict) -> list[str]:
@@ -150,15 +166,46 @@ def render_paper_trading_tab(
         if auto_trading != state.is_auto_trading:
             state = state.model_copy(update={"is_auto_trading": auto_trading})
             _set_state(state, algo_name)
-        if st.button("Reset Session", key=f"paper_reset_btn_{algo_name}", type="secondary"):
-            cfg = load_config().get("paper_trading", {})
-            fresh = PaperTradingState(
-                initial_capital=_initial_capital(algo_name),
-                is_auto_trading=cfg.get("auto_execute", True),
-            )
-            _set_state(fresh, algo_name)
-            _clear_critiques_db()
-            st.rerun()
+        has_data = len(state.trade_log) + len(state.open_positions) > 0
+        confirm_key = f"paper_reset_confirm_{algo_name}"
+        if has_data:
+            if st.button("Reset Session", key=f"paper_reset_btn_{algo_name}", type="secondary"):
+                st.session_state[confirm_key] = True
+            if st.session_state.get(confirm_key, False):
+                st.warning(
+                    f"This will delete **{len(state.trade_log)} trades** and "
+                    f"**{len(state.open_positions)} open positions**. This cannot be undone."
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Yes, reset", key=f"paper_reset_yes_{algo_name}", type="primary"):
+                        logger.warning(
+                            "User confirmed reset for %s (trades=%d, positions=%d)",
+                            algo_name, len(state.trade_log), len(state.open_positions),
+                        )
+                        cfg = load_config().get("paper_trading", {})
+                        fresh = PaperTradingState(
+                            initial_capital=_initial_capital(algo_name),
+                            is_auto_trading=cfg.get("auto_execute", True),
+                        )
+                        _force_set_state(fresh, algo_name)
+                        _clear_critiques_db()
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+                with c2:
+                    if st.button("Cancel", key=f"paper_reset_cancel_{algo_name}"):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+        else:
+            if st.button("Reset Session", key=f"paper_reset_btn_{algo_name}", type="secondary"):
+                cfg = load_config().get("paper_trading", {})
+                fresh = PaperTradingState(
+                    initial_capital=_initial_capital(algo_name),
+                    is_auto_trading=cfg.get("auto_execute", True),
+                )
+                _force_set_state(fresh, algo_name)
+                _clear_critiques_db()
+                st.rerun()
 
     # --- Run engine logic (evaluate_and_manage) ---
     cfg = load_config().get("paper_trading", {})

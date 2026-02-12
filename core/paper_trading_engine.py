@@ -6,6 +6,7 @@ Designed for future reuse in algorithmic trading.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -860,27 +861,59 @@ def _state_file(algo_name: str = "sentinel") -> Path:
     return _DATA_DIR / f"paper_trading_state_{algo_name}.json"
 
 
+def _count_trades(path: Path) -> tuple[int, int]:
+    """Return (trade_log count, open_positions count) from a state file.
+
+    Uses raw JSON parsing — if the file is corrupt, returns (0, 0).
+    """
+    try:
+        data = json.loads(path.read_text())
+        return len(data.get("trade_log", [])), len(data.get("open_positions", []))
+    except Exception:
+        return 0, 0
+
+
 def save_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
-    """Persist paper trading state to disk (atomic write with backup)."""
+    """Persist paper trading state to disk (atomic write with backup).
+
+    Safety: refuses to overwrite a file that has trades/positions with an
+    empty state. Call ``force_save_state()`` for intentional resets.
+    """
     import logging
 
     _logger = logging.getLogger(__name__)
     path = _state_file(algo_name)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Rotate backups: keep last 3
+    new_trades = len(state.trade_log)
+    new_positions = len(state.open_positions)
+
+    # --- Empty-state guard ---
     if path.exists():
-        try:
-            for i in range(2, 0, -1):
-                older = path.with_suffix(f".bak{i}")
-                newer = path.with_suffix(f".bak{i - 1}" if i > 1 else ".bak")
-                if newer.exists():
-                    newer.replace(older)
-            path.with_suffix(".bak").parent.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(path, path.with_suffix(".bak"))
-        except Exception as e:
-            _logger.warning("Failed to create state backup: %s", e)
+        old_trades, old_positions = _count_trades(path)
+        if (old_trades + old_positions) > 0 and (new_trades + new_positions) == 0:
+            _logger.critical(
+                "BLOCKED: save_state() refused to overwrite %s — "
+                "existing file has %d trades + %d positions but new state is empty. "
+                "Use force_save_state() for intentional resets.",
+                path.name, old_trades, old_positions,
+            )
+            return
+
+    # --- Rotate backups only when trade/position count changes ---
+    if path.exists():
+        old_trades, old_positions = _count_trades(path)
+        if (old_trades, old_positions) != (new_trades, new_positions):
+            try:
+                for i in range(2, 0, -1):
+                    older = path.with_suffix(f".bak{i}")
+                    newer = path.with_suffix(f".bak{i - 1}" if i > 1 else ".bak")
+                    if newer.exists():
+                        newer.replace(older)
+                import shutil
+                shutil.copy2(path, path.with_suffix(".bak"))
+            except Exception as e:
+                _logger.warning("Failed to create state backup: %s", e)
 
     import os
     import tempfile
@@ -894,8 +927,53 @@ def save_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
         raise
 
 
+def force_save_state(state: PaperTradingState, algo_name: str = "sentinel") -> None:
+    """Save state bypassing the empty-state guard (for intentional resets).
+
+    Still rotates backups before overwriting so old data is recoverable.
+    """
+    import logging
+    import shutil
+
+    _logger = logging.getLogger(__name__)
+    path = _state_file(algo_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Rotate backups unconditionally so old data is recoverable
+    if path.exists():
+        try:
+            for i in range(2, 0, -1):
+                older = path.with_suffix(f".bak{i}")
+                newer = path.with_suffix(f".bak{i - 1}" if i > 1 else ".bak")
+                if newer.exists():
+                    newer.replace(older)
+            shutil.copy2(path, path.with_suffix(".bak"))
+        except Exception as e:
+            _logger.warning("Failed to create state backup during force save: %s", e)
+
+    import os
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(state.model_dump_json(indent=2))
+        Path(tmp_path).replace(path)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+    _logger.warning("force_save_state: overwrote %s (intentional reset)", path.name)
+
+
 def load_state(algo_name: str = "sentinel") -> PaperTradingState | None:
-    """Load paper trading state from disk. Returns None if no saved state."""
+    """Load paper trading state from disk with backup fallback.
+
+    Tries primary file first, then .bak → .bak1 → .bak2 on failure.
+    Returns None only if ALL files fail or don't exist.
+    """
+    import logging
+
+    _logger = logging.getLogger(__name__)
     path = _state_file(algo_name)
 
     # One-time migration: old unparameterized file -> sentinel
@@ -904,6 +982,26 @@ def load_state(algo_name: str = "sentinel") -> PaperTradingState | None:
         if legacy.exists():
             legacy.rename(path)
 
-    if path.exists():
-        return PaperTradingState.model_validate_json(path.read_text())
+    # Try primary file, then backups in order
+    candidates = [path, path.with_suffix(".bak"), path.with_suffix(".bak1"), path.with_suffix(".bak2")]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            text = candidate.read_text()
+            if not text.strip():
+                _logger.warning("State file is empty: %s", candidate)
+                continue
+            state = PaperTradingState.model_validate_json(text)
+            if candidate != path:
+                _logger.warning(
+                    "Primary state file failed — recovered from backup: %s "
+                    "(trades=%d, positions=%d)",
+                    candidate.name, len(state.trade_log), len(state.open_positions),
+                )
+            return state
+        except Exception as e:
+            _logger.error("Failed to load state from %s: %s", candidate.name, e)
+            continue
+
     return None
