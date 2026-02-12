@@ -188,7 +188,7 @@ def render_options_desk_tab() -> None:
         _render_warmup_view(snap, secs_remaining, entry_time)
     else:
         # Post-warmup: show compact morning context if observation is complete
-        obs = snap.observation
+        obs = getattr(snap, "observation", None)
         if obs and obs.is_complete and obs.bars_collected > 0:
             with st.expander("Morning Context (9:15-10:00 observation)", expanded=False):
                 mc_cols = st.columns(5)
@@ -275,7 +275,7 @@ def _render_warmup_view(snap, seconds_remaining: int, entry_time: str) -> None:
     st.info(f"Warming up — suggestions will appear at **{entry_time} IST** (in {mins}m {secs}s)")
 
     # Observation data (accumulated during warmup)
-    obs = snap.observation
+    obs = getattr(snap, "observation", None)
     if obs and obs.bars_collected > 0:
         st.markdown("**Observation Period Data**")
         obs_cols = st.columns(4)

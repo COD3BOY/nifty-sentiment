@@ -446,7 +446,7 @@ for algo_name in _enabled_algos:
         try:
             algo_suggestions_map[algo_name] = algo_instance.generate_suggestions(
                 snap.chain, snap.technicals, snap.analytics,
-                observation=snap.observation,
+                observation=getattr(snap, "observation", None),
             )
         except Exception:
             algo_suggestions_map[algo_name] = []
@@ -466,7 +466,7 @@ for algo_tab, algo_name in zip(algo_tabs, _enabled_algos):
             algo_display_name=_algo_registry[algo_name].display_name,
             algo_description=_algo_registry[algo_name].description,
             evaluate_fn=algo_instances_map[algo_name].evaluate_and_manage,
-            observation=snap.observation if snap else None,
+            observation=getattr(snap, "observation", None) if snap else None,
         )
 
 # ============================================================
