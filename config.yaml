@@ -374,3 +374,13 @@ criticizer:
   max_parameter_drift_pct: 0.30
   override_min_confidence: 0.7
 
+self_improvement:
+  enabled: true
+  min_sample_size: 15          # Min trades before allowing a param change
+  max_step_pct: 0.15           # Max 15% change per review cycle
+  max_drift_pct: 0.40          # Max 40% cumulative drift from default
+  cooling_period_trades: 10    # Trades to wait after a change before re-evaluating
+  reversion_trigger_losses: 5  # Consecutive losses to trigger reversion flag
+  max_changes_per_session: 3   # Max param changes per review session
+  rolling_window_days: 20      # Rolling window for signal reliability analysis
+

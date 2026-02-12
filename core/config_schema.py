@@ -85,6 +85,29 @@ class AlgorithmConfig(BaseModel):
         extra = "allow"
 
 
+class SelfImprovementConfig(BaseModel):
+    """Validation for self-improvement / daily review safety rails."""
+    enabled: bool = True
+    min_sample_size: int = Field(ge=5, le=100, default=15)
+    max_step_pct: float = Field(gt=0.0, le=0.5, default=0.15)
+    max_drift_pct: float = Field(gt=0.0, le=1.0, default=0.40)
+    cooling_period_trades: int = Field(ge=1, le=100, default=10)
+    reversion_trigger_losses: int = Field(ge=2, le=20, default=5)
+    max_changes_per_session: int = Field(ge=1, le=10, default=3)
+    rolling_window_days: int = Field(ge=5, le=90, default=20)
+
+    @model_validator(mode="after")
+    def validate_drift_exceeds_step(self) -> "SelfImprovementConfig":
+        if self.max_drift_pct < self.max_step_pct:
+            raise ValueError(
+                f"max_drift_pct ({self.max_drift_pct}) must be >= max_step_pct ({self.max_step_pct})"
+            )
+        return self
+
+    class Config:
+        extra = "allow"
+
+
 class OptionsDeskConfig(BaseModel):
     symbol: str = "NIFTY"
     lot_size: int = Field(gt=0, default=65)
@@ -112,6 +135,7 @@ class NiftyConfig(BaseModel):
     paper_trading: PaperTradingConfig
     algorithms: dict[str, Any] = Field(default_factory=dict)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    self_improvement: SelfImprovementConfig = Field(default_factory=SelfImprovementConfig)
 
     class Config:
         extra = "allow"

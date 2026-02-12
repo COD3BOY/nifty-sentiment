@@ -51,7 +51,10 @@ nifty/
 │   ├── trade_context.py          # Market context snapshots at entry/exit
 │   ├── kite_margins.py           # Kite SPAN margin API wrapper
 │   ├── margin_cache.py           # JSON disk cache for margin-per-lot (<24h TTL)
-│   └── criticizer_models.py      # ParameterRecommendation, TradeCritique Pydantic models
+│   ├── criticizer_models.py      # ParameterRecommendation, TradeCritique Pydantic models
+│   ├── improvement_models.py     # TradeClassification, SignalReliability, ImprovementProposal, ReviewSession
+│   ├── improvement_ledger.py     # Change lifecycle: propose/approve/apply/revert + cooling/reversion monitoring
+│   └── parameter_bounds.py       # Hard bounds for all 50 tunable param_keys + safety constants
 │
 ├── algorithms/                   # Pluggable trading algorithms (V1-V4)
 │   ├── __init__.py               # @register_algorithm + discover_algorithms()
@@ -81,7 +84,8 @@ nifty/
 ├── analyzers/                    # Claude-powered analysis
 │   ├── claude_analyzer.py        # Sentiment structured output
 │   ├── trade_criticizer.py       # Trade critique + param recommendations
-│   └── eod_report.py             # End-of-day report generator
+│   ├── eod_report.py             # End-of-day report generator
+│   └── daily_review.py           # Self-improvement: trade classification, signal reliability, calibration
 │
 ├── scripts/
 │   └── tune_vol_params.py        # V4 Atlas backtest param tuner
@@ -268,3 +272,13 @@ See `docs/production-readiness.md` for the full gap analysis and prioritized che
 | 2026-02-12 | `core/paper_trading_engine.py` | New `force_save_state()` for intentional resets (bypasses guard, still rotates backups) | Reset button needs to bypass empty-state guard |
 | 2026-02-12 | `ui/paper_trading_tab.py` | `_get_state()` logging, two-step Reset confirmation with trade/position counts, `_force_set_state()` helper | One-click Reset with no confirmation wiped all data; no logging on state load |
 | 2026-02-12 | `tests/test_paper_trading_engine.py` | 4 new tests: backup fallback, empty-overwrite guard, rotation-on-change-only, force-save bypass | Verify state persistence safety (369 total tests) |
+| 2026-02-12 | `docs/self_improvement_protocol.md` (new) | Comprehensive methodology doc: trade classification matrix (A/B/C/D), signal reliability analysis, parameter calibration via MAE/MFE, safety rails, change lifecycle, daily review protocol, anti-patterns | No documented process for reviewing trades and making evidence-based parameter changes |
+| 2026-02-12 | `core/parameter_bounds.py` (new) | Hard bounds for all 50 param_keys + safety constants (15% max step, 40% max drift, 15 min sample, 10 cooling trades, 5 loss reversion trigger, 3 max changes/session) + validation helpers | No guardrails on parameter changes — could drift arbitrarily |
+| 2026-02-12 | `core/improvement_models.py` (new) | 5 Pydantic models: TradeClassification, SignalReliability, ParameterCalibration, ImprovementProposal, ReviewSession | Type-safe data structures for the self-improvement pipeline |
+| 2026-02-12 | `core/database.py` | Add `ImprovementLedgerRow` and `ReviewSessionRow` tables + 6 new methods (save/update/get ledger, save/get review sessions) | Persistent tracking of parameter change lifecycle (proposed→applied→confirmed/reverted) |
+| 2026-02-12 | `core/improvement_ledger.py` (new) | Business logic layer: propose/approve/reject/defer/apply/revert changes, cooling period checks, reversion trigger monitoring, review session persistence | Wraps raw DB ops with safety rail enforcement and lifecycle management |
+| 2026-02-12 | `analyzers/daily_review.py` (new) | Analysis engine: classify_trade (A/B/C/D matrix), signal extraction from entry_context, compute_signal_reliability (rolling window), calibrate_parameters (MAE/MFE), check_safety_rails, run_daily_review orchestrator | No automated trade analysis or evidence-based parameter recommendation pipeline |
+| 2026-02-12 | `core/trade_strategies.py` | Wire `get_active_overrides()` into `generate_trade_suggestions()` — overrides now loaded from database instead of hardcoded `{}` | Dead code: 50 param_keys had override plumbing (`_p()`) but `overrides={}` was always passed |
+| 2026-02-12 | `config.yaml` | Add `self_improvement` section with 7 safety rail parameters | Safety rail thresholds need to be configurable |
+| 2026-02-12 | `core/config_schema.py` | Add `SelfImprovementConfig` Pydantic model with cross-validation (drift >= step) | Validate self-improvement config at startup |
+| 2026-02-12 | `tests/test_daily_review.py` (new) | 42 tests: trade classification (6), signal extraction (4), regime fit (5), signal reliability (4), parameter calibration (3), safety rails (5), parameter bounds (8), full review (4), models (3) | Test coverage for entire self-improvement system (411 total tests) |

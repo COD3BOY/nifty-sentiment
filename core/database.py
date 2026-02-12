@@ -122,6 +122,46 @@ class ParameterAdjustmentRow(Base):
     applied = Column(Integer, default=0)  # 0=pending, 1=applied, -1=rejected
 
 
+class ImprovementLedgerRow(Base):
+    """Tracks the lifecycle of a parameter change from proposal to confirmation/reversion."""
+
+    __tablename__ = "improvement_ledger"
+
+    id = Column(String(20), primary_key=True)  # UUID prefix
+    date = Column(String(10), nullable=False, index=True)  # trading date
+    algorithm = Column(String(30), nullable=False, index=True)
+    strategy_name = Column(String(50), nullable=False, index=True)
+    parameter_name = Column(String(50), nullable=False, index=True)
+    default_value = Column(Float, nullable=False)
+    old_value = Column(Float, nullable=False)
+    new_value = Column(Float, nullable=False)
+    change_pct = Column(Float, nullable=False)
+    evidence_trade_count = Column(Integer, nullable=False)
+    evidence_json = Column(Text, default="{}")
+    confidence = Column(Float, default=0.0)
+    status = Column(String(20), nullable=False, default="proposed")
+    pre_metrics_json = Column(Text, default="{}")
+    post_metrics_json = Column(Text, default="{}")
+    created_at = Column(DateTime, nullable=False)
+    applied_at = Column(DateTime, nullable=True)
+    reverted_at = Column(DateTime, nullable=True)
+    trades_since_applied = Column(Integer, default=0)
+    consecutive_losses = Column(Integer, default=0)
+
+
+class ReviewSessionRow(Base):
+    """Stores daily review session summaries."""
+
+    __tablename__ = "review_sessions"
+
+    id = Column(String(20), primary_key=True)
+    date = Column(String(10), nullable=False, index=True)
+    algorithm = Column(String(30), nullable=False, index=True)
+    trades_reviewed = Column(Integer, default=0)
+    summary_json = Column(Text, default="{}")
+    created_at = Column(DateTime, nullable=False)
+
+
 class SentimentDatabase:
     def __init__(self):
         config = load_config()
@@ -450,3 +490,174 @@ class SentimentDatabase:
             "accuracy": (correct / total * 100) if total > 0 else 0.0,
             "days": days,
         }
+
+    # ------------------------------------------------------------------
+    # Improvement ledger persistence
+    # ------------------------------------------------------------------
+
+    def save_ledger_entry(self, entry: dict[str, Any]) -> str:
+        """Save a new improvement ledger entry. Returns the entry ID."""
+        with self.SessionLocal() as session:
+            row = ImprovementLedgerRow(
+                id=entry["id"],
+                date=entry["date"],
+                algorithm=entry["algorithm"],
+                strategy_name=entry["strategy_name"],
+                parameter_name=entry["parameter_name"],
+                default_value=entry["default_value"],
+                old_value=entry["old_value"],
+                new_value=entry["new_value"],
+                change_pct=entry["change_pct"],
+                evidence_trade_count=entry["evidence_trade_count"],
+                evidence_json=_dumps(entry.get("evidence", {})),
+                confidence=entry.get("confidence", 0.0),
+                status=entry.get("status", "proposed"),
+                pre_metrics_json=_dumps(entry.get("pre_metrics", {})),
+                post_metrics_json=_dumps(entry.get("post_metrics", {})),
+                created_at=entry.get("created_at", datetime.utcnow()),
+            )
+            session.add(row)
+            session.commit()
+            return entry["id"]
+
+    def update_ledger_status(
+        self, entry_id: str, status: str, **kwargs: Any
+    ) -> bool:
+        """Update the status (and optional fields) of a ledger entry."""
+        with self.SessionLocal() as session:
+            row = session.query(ImprovementLedgerRow).filter(
+                ImprovementLedgerRow.id == entry_id
+            ).first()
+            if not row:
+                return False
+            row.status = status
+            if "applied_at" in kwargs:
+                row.applied_at = kwargs["applied_at"]
+            if "reverted_at" in kwargs:
+                row.reverted_at = kwargs["reverted_at"]
+            if "post_metrics" in kwargs:
+                row.post_metrics_json = _dumps(kwargs["post_metrics"])
+            if "trades_since_applied" in kwargs:
+                row.trades_since_applied = kwargs["trades_since_applied"]
+            if "consecutive_losses" in kwargs:
+                row.consecutive_losses = kwargs["consecutive_losses"]
+            session.commit()
+            return True
+
+    def get_ledger_entries(
+        self,
+        algorithm: str | None = None,
+        status: str | None = None,
+        days: int = 90,
+    ) -> list[dict[str, Any]]:
+        """Return ledger entries filtered by algorithm, status, and age."""
+        with self.SessionLocal() as session:
+            query = session.query(ImprovementLedgerRow)
+            if algorithm:
+                query = query.filter(ImprovementLedgerRow.algorithm == algorithm)
+            if status:
+                query = query.filter(ImprovementLedgerRow.status == status)
+            rows = query.order_by(ImprovementLedgerRow.created_at.desc()).all()
+            return [
+                {
+                    "id": r.id,
+                    "date": r.date,
+                    "algorithm": r.algorithm,
+                    "strategy_name": r.strategy_name,
+                    "parameter_name": r.parameter_name,
+                    "default_value": r.default_value,
+                    "old_value": r.old_value,
+                    "new_value": r.new_value,
+                    "change_pct": r.change_pct,
+                    "evidence_trade_count": r.evidence_trade_count,
+                    "evidence": json.loads(r.evidence_json),
+                    "confidence": r.confidence,
+                    "status": r.status,
+                    "pre_metrics": json.loads(r.pre_metrics_json),
+                    "post_metrics": json.loads(r.post_metrics_json),
+                    "created_at": r.created_at,
+                    "applied_at": r.applied_at,
+                    "reverted_at": r.reverted_at,
+                    "trades_since_applied": r.trades_since_applied,
+                    "consecutive_losses": r.consecutive_losses,
+                }
+                for r in rows
+            ]
+
+    def get_active_ledger_for_param(
+        self, strategy_name: str, parameter_name: str
+    ) -> dict[str, Any] | None:
+        """Return the currently applied ledger entry for a specific parameter, if any."""
+        with self.SessionLocal() as session:
+            row = (
+                session.query(ImprovementLedgerRow)
+                .filter(
+                    ImprovementLedgerRow.strategy_name == strategy_name,
+                    ImprovementLedgerRow.parameter_name == parameter_name,
+                    ImprovementLedgerRow.status.in_(["applied", "monitoring"]),
+                )
+                .order_by(ImprovementLedgerRow.created_at.desc())
+                .first()
+            )
+            if not row:
+                return None
+            return {
+                "id": row.id,
+                "date": row.date,
+                "algorithm": row.algorithm,
+                "strategy_name": row.strategy_name,
+                "parameter_name": row.parameter_name,
+                "default_value": row.default_value,
+                "old_value": row.old_value,
+                "new_value": row.new_value,
+                "change_pct": row.change_pct,
+                "status": row.status,
+                "created_at": row.created_at,
+                "applied_at": row.applied_at,
+                "trades_since_applied": row.trades_since_applied,
+                "consecutive_losses": row.consecutive_losses,
+            }
+
+    # ------------------------------------------------------------------
+    # Review session persistence
+    # ------------------------------------------------------------------
+
+    def save_review_session(self, session_data: dict[str, Any]) -> str:
+        """Save a review session summary. Returns the session ID."""
+        with self.SessionLocal() as session:
+            row = ReviewSessionRow(
+                id=session_data["id"],
+                date=session_data["date"],
+                algorithm=session_data["algorithm"],
+                trades_reviewed=session_data.get("trades_reviewed", 0),
+                summary_json=_dumps(session_data.get("summary", {})),
+                created_at=session_data.get("created_at", datetime.utcnow()),
+            )
+            session.add(row)
+            session.commit()
+            return session_data["id"]
+
+    def get_review_sessions(
+        self, algorithm: str | None = None, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """Return recent review sessions."""
+        with self.SessionLocal() as session:
+            query = session.query(ReviewSessionRow)
+            if algorithm:
+                query = query.filter(ReviewSessionRow.algorithm == algorithm)
+            rows = (
+                query.order_by(ReviewSessionRow.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "date": r.date,
+                    "algorithm": r.algorithm,
+                    "trades_reviewed": r.trades_reviewed,
+                    "summary": json.loads(r.summary_json),
+                    "created_at": r.created_at,
+                }
+                for r in rows
+            ]
