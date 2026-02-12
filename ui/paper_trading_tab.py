@@ -254,9 +254,10 @@ def render_paper_trading_tab(
             st.info("No open positions. Enable **Auto-Trading** to automatically execute trade suggestions.")
 
     # --- Trade Status Notes ---
-    if state.trade_status_notes:
+    _status_notes = getattr(state, "trade_status_notes", [])
+    if _status_notes:
         with st.expander("Trade Status", expanded=not open_pos):
-            for note in state.trade_status_notes:
+            for note in _status_notes:
                 if any(kw in note.lower() for kw in ["blocked", "stand-down", "shutdown", "halted", "stale"]):
                     st.markdown(f"- :orange[{note}]")
                 elif any(kw in note.lower() for kw in ["opened:"]):
