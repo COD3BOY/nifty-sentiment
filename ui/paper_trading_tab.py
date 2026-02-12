@@ -103,13 +103,14 @@ def _fmt_pnl(pnl: float) -> str:
     return f"{sign}\u20b9{pnl:,.0f}"
 
 
-def _exit_reason_label(status: PositionStatus) -> str:
+def _exit_reason_label(status: str) -> str:
     return {
-        PositionStatus.CLOSED_STOP_LOSS: "Stop Loss",
-        PositionStatus.CLOSED_PROFIT_TARGET: "Profit Target",
-        PositionStatus.CLOSED_MANUAL: "Manual Close",
-        PositionStatus.CLOSED_EOD: "End of Day",
-    }.get(status, status.value)
+        "closed_stop_loss": "Stop Loss",
+        "closed_profit_target": "Profit Target",
+        "closed_manual": "Manual Close",
+        "closed_eod": "End of Day",
+        "closed_time_limit": "Time Limit",
+    }.get(status, status)
 
 
 def render_paper_trading_tab(

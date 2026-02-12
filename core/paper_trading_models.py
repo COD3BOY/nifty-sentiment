@@ -61,11 +61,9 @@ class PositionLeg(BaseModel):
 class PaperPosition(BaseModel):
     """Multi-leg paper position."""
 
-    model_config = ConfigDict(use_enum_values=True)
-
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     strategy: str
-    strategy_type: StrategyType
+    strategy_type: str  # "credit" or "debit"
     direction_bias: str
     confidence: str
     score: float
@@ -73,7 +71,7 @@ class PaperPosition(BaseModel):
     lots: int = 1
     entry_time: datetime = Field(default_factory=_now_ist)
     exit_time: datetime | None = None
-    status: PositionStatus = PositionStatus.OPEN
+    status: str = "open"
     net_premium: float = 0.0
     stop_loss_amount: float = 0.0
     profit_target_amount: float = 0.0
@@ -96,11 +94,9 @@ class PaperPosition(BaseModel):
 class TradeRecord(BaseModel):
     """Immutable record of a closed trade."""
 
-    model_config = ConfigDict(use_enum_values=True)
-
     id: str
     strategy: str
-    strategy_type: StrategyType
+    strategy_type: str  # "credit" or "debit"
     direction_bias: str
     confidence: str
     score: float
@@ -108,7 +104,7 @@ class TradeRecord(BaseModel):
     lots: int = 1
     entry_time: datetime
     exit_time: datetime
-    exit_reason: PositionStatus
+    exit_reason: str  # PositionStatus value
     realized_pnl: float
     execution_cost: float = 0.0
     net_pnl: float = 0.0

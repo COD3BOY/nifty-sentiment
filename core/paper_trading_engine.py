@@ -410,7 +410,7 @@ def open_position(
 
     return PaperPosition(
         strategy=suggestion.strategy.value,
-        strategy_type=strategy_type,
+        strategy_type=strategy_type.value,
         direction_bias=suggestion.direction_bias,
         confidence=suggestion.confidence,
         score=suggestion.score,
@@ -496,7 +496,7 @@ def close_position(
     """Close a position and create an immutable trade record."""
     now = _now_ist()
     closed_position = position.model_copy(
-        update={"status": reason, "exit_time": now},
+        update={"status": reason.value, "exit_time": now},
     )
 
     # Build exit context snapshot
@@ -541,7 +541,7 @@ def close_position(
         lots=position.lots,
         entry_time=position.entry_time,
         exit_time=now,
-        exit_reason=reason,
+        exit_reason=reason.value,
         realized_pnl=gross_pnl,
         execution_cost=position.execution_cost,
         net_pnl=gross_pnl - position.execution_cost,
