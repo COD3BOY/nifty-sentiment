@@ -45,8 +45,8 @@ def _render_live_technical_table() -> None:
         st.info("No live data yet — open the **Options Desk** tab to trigger a fetch.")
         return
 
-    candle_meta = snap.candle_meta
-    chain_meta = snap.chain_meta
+    candle_meta = getattr(snap, "candle_meta", None)
+    chain_meta = getattr(snap, "chain_meta", None)
 
     # Warn if candle data is from fallback source
     if candle_meta and not candle_meta.is_primary:

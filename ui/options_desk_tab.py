@@ -101,10 +101,12 @@ def render_options_desk_tab() -> None:
             st.session_state.options_last_refresh = time.time()
             # Populate session state timestamps for System Health Data Freshness
             snap_meta = st.session_state.options_snapshot
-            if snap_meta and snap_meta.chain_meta:
-                st.session_state.last_chain_fetch_ts = snap_meta.chain_meta.fetch_ts
-            if snap_meta and snap_meta.candle_meta:
-                st.session_state.last_candle_fetch_ts = snap_meta.candle_meta.fetch_ts
+            chain_m = getattr(snap_meta, "chain_meta", None) if snap_meta else None
+            candle_m = getattr(snap_meta, "candle_meta", None) if snap_meta else None
+            if chain_m:
+                st.session_state.last_chain_fetch_ts = chain_m.fetch_ts
+            if candle_m:
+                st.session_state.last_candle_fetch_ts = candle_m.fetch_ts
 
     # --- Market status banner (after fetch so timestamp is current) ---
     _render_market_status_banner()
