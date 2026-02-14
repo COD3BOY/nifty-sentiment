@@ -137,6 +137,10 @@ STRATEGY_RULES: dict[str, dict] = {
              "param_key": "rsi_bullish_low", "default": 50},
             {"signal": "rsi", "condition": ">= 70", "score_change": "-10", "description": "Overbought",
              "param_key": "rsi_overbought_threshold", "default": 70},
+            {"signal": "atm_iv", "condition": ">= 14", "score_change": "-15", "description": "High IV — buying expensive premium",
+             "param_key": "iv_high_penalty_threshold", "default": 14},
+            {"signal": "bb_width_pct", "condition": ">= 1.5%", "score_change": "-15", "description": "Wide BB — breakout already happened",
+             "param_key": "bb_width_expanded_pct", "default": 1.5},
         ],
     },
     "Bear Put Spread": {
@@ -152,6 +156,10 @@ STRATEGY_RULES: dict[str, dict] = {
              "param_key": "rsi_bearish_high", "default": 50},
             {"signal": "rsi", "condition": "<= 30", "score_change": "-10", "description": "Oversold",
              "param_key": "rsi_oversold_threshold", "default": 30},
+            {"signal": "atm_iv", "condition": ">= 14", "score_change": "-15", "description": "High IV — buying expensive premium",
+             "param_key": "iv_high_penalty_threshold", "default": 14},
+            {"signal": "bb_width_pct", "condition": ">= 1.5%", "score_change": "-15", "description": "Wide BB — breakout already happened",
+             "param_key": "bb_width_expanded_pct", "default": 1.5},
         ],
     },
     "Iron Condor": {
@@ -190,6 +198,8 @@ STRATEGY_RULES: dict[str, dict] = {
             {"signal": "rsi", "condition": ">= 70", "score_change": "-15", "description": "Overbought"},
             {"signal": "pcr", "condition": "> 1.2", "score_change": "+10", "description": "Bullish options flow",
              "param_key": "pcr_bullish_threshold", "default": 1.2},
+            {"signal": "atm_iv", "condition": ">= 14", "score_change": "-15", "description": "High IV — naked long buying expensive premium",
+             "param_key": "iv_high_penalty_threshold", "default": 14},
         ],
     },
     "Long Put (PE)": {
@@ -205,6 +215,8 @@ STRATEGY_RULES: dict[str, dict] = {
             {"signal": "rsi", "condition": "<= 30", "score_change": "-15", "description": "Oversold"},
             {"signal": "pcr", "condition": "< 0.7", "score_change": "+10", "description": "Bearish options flow",
              "param_key": "pcr_bearish_threshold", "default": 0.7},
+            {"signal": "atm_iv", "condition": ">= 14", "score_change": "-15", "description": "High IV — naked long buying expensive premium",
+             "param_key": "iv_high_penalty_threshold", "default": 14},
         ],
     },
 }

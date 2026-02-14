@@ -48,11 +48,13 @@ class PaperTradingConfig(BaseModel):
     lot_size: int = Field(gt=0)
     auto_execute: bool = True
     min_score_to_trade: float = Field(ge=0, le=100, default=50)
+    debit_min_score_to_trade: float = Field(ge=0, le=100, default=55)
     trade_cooldown_seconds: int = Field(ge=0, default=60)
     max_lots: int = Field(gt=0, default=4)
     capital_utilization: float = Field(gt=0, le=1.0, default=0.70)
     daily_loss_limit_pct: float = Field(ge=0.1, le=10.0, default=3.0)
     max_open_positions: int = Field(gt=0, default=3)
+    max_trades_per_day: int = Field(gt=0, default=6)
     max_staleness_minutes: float = Field(gt=0, default=20)
     eod_close_time: str = "15:20"
     entry_start_time: str = "10:00"

@@ -139,11 +139,12 @@ paper_trading:
   lot_size: 65
   auto_execute: true
   min_score_to_trade: 50
+  debit_min_score_to_trade: 61
   trade_cooldown_seconds: 60
   max_lots: 4
   capital_utilization: 0.70
   daily_loss_limit_pct: 3.0
-  debit_max_hold_minutes: 120
+  debit_max_hold_minutes: 240
   eod_close_time: "15:20"
   entry_start_time: "10:00"         # Warmup 9:15-10:00 — collect data before trading
   entry_cutoff_time: "15:10"
@@ -156,15 +157,16 @@ paper_trading:
     vwap_consistency_pct: 70.0       # 70%+ bars above/below = consistent
     historical_days: 5               # days of data for volume comparison
   max_open_positions: 3
+  max_trades_per_day: 6
   max_positions_per_direction: 2
   max_staleness_minutes: 20
   slippage_per_leg: 3.0
   stop_loss:
     credit_fallback_multiplier: 2.0
-    debit_premium_pct: 0.40
+    debit_premium_pct: 0.25
   profit_target:
     credit_pct: 0.30
-    debit_pct: 0.50
+    debit_pct: 0.25
   execution_cost:
     brokerage_per_order: 20
     stt_sell_pct: 0.001

@@ -424,6 +424,8 @@ def open_position(
         margin_required=total_margin,
         margin_source=margin_source,
         entry_context=entry_context_dict,
+        entry_time=_now_ist(),
+        entry_date=_now_ist().strftime("%Y-%m-%d"),
     )
 
 
@@ -653,6 +655,7 @@ def evaluate_and_manage(
 
     cfg = _pt_cfg()
     min_score = cfg.get("min_score_to_trade", 30)
+    debit_min_score = cfg.get("debit_min_score_to_trade", 55)
 
     # --- Phase 1: Manage existing positions ---
     still_open: list[PaperPosition] = []
@@ -768,6 +771,20 @@ def evaluate_and_manage(
         )
         return state
 
+    # Max trades per day gate
+    max_trades_per_day = cfg.get("max_trades_per_day", 6)
+    today = _now_ist().date()
+    today_trade_count = sum(1 for t in state.trade_log if t.entry_time.date() == today)
+    today_trade_count += len([p for p in state.open_positions if p.status == PositionStatus.OPEN])
+    if today_trade_count >= max_trades_per_day:
+        logger.info(
+            "Max trades per day (%d) reached (closed=%d, open=%d) — blocking new trades",
+            max_trades_per_day,
+            sum(1 for t in state.trade_log if t.entry_time.date() == today),
+            len([p for p in state.open_positions if p.status == PositionStatus.OPEN]),
+        )
+        return state
+
     if (
         state.is_auto_trading
         and suggestions
@@ -775,7 +792,7 @@ def evaluate_and_manage(
     ):
         # 60-second cooldown between successive trade opens
         cooldown = cfg.get("trade_cooldown_seconds", 60)
-        now_ts = _time.time()
+        now_ts = refresh_ts if refresh_ts > 0 else _time.time()
         if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < cooldown:
             logger.info(
                 "Trade cooldown active — %.0fs remaining",
@@ -808,8 +825,9 @@ def evaluate_and_manage(
                 )
                 continue
 
-            if suggestion.score < min_score:
-                logger.debug("Skipping %s — score %.1f < min %d", suggestion.strategy.value, suggestion.score, min_score)
+            effective_min = debit_min_score if classify_strategy(suggestion.strategy) == StrategyType.DEBIT else min_score
+            if suggestion.score < effective_min:
+                logger.debug("Skipping %s — score %.1f < min %d", suggestion.strategy.value, suggestion.score, effective_min)
                 continue
             # (d) High-confidence-only gate
             if suggestion.confidence != "High":
@@ -840,7 +858,7 @@ def evaluate_and_manage(
             state = state.model_copy(
                 update={
                     "open_positions": state.open_positions + [position],
-                    "last_trade_opened_ts": _time.time(),
+                    "last_trade_opened_ts": refresh_ts if refresh_ts > 0 else _time.time(),
                 },
             )
             # (c) Max 1 trade per cycle

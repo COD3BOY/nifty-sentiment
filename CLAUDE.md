@@ -90,6 +90,27 @@ nifty/
 ├── scripts/
 │   └── tune_vol_params.py        # V4 Atlas backtest param tuner
 │
+├── simulation/                   # Market simulation & stress testing
+│   ├── __init__.py               # Package init
+│   ├── __main__.py               # python -m simulation entry point
+│   ├── clock.py                  # VirtualClock — time compression, patches _now_ist/is_market_open
+│   ├── price_engine.py           # GBM + jumps + OU price path generator + VIX co-generation
+│   ├── chain_synthesizer.py      # Synthetic option chain (IV smile, BS LTPs, OI, bid-ask)
+│   ├── scenario_models.py        # Pydantic models for YAML scenario definitions
+│   ├── data_assembler.py         # Bridges synthetic data → real indicators/analytics/observation
+│   ├── adversarial.py            # SL hunting, false breakouts, whipsaw, liquidity vacuum, delta spike
+│   ├── runner.py                 # Orchestrator — runs algos against synthetic data tick-by-tick
+│   ├── results.py                # SimulationResult + self-improvement bridge (daily_review)
+│   ├── cli.py                    # Click CLI: run/run-all/compare/review/list-scenarios
+│   ├── sim_dashboard.py          # Streamlit visualization (run/results/compare)
+│   └── scenarios/                # YAML scenario library (28 scenarios)
+│       ├── normal.yaml           # Trending up/down, range-bound, slow grind, low-volume
+│       ├── gaps.yaml             # Small/large/extreme gaps, gap-fill, gap-and-run
+│       ├── crisis.yaml           # Flash crash, overnight crisis, multi-day meltdown, COVID cascade
+│       ├── volatility.yaml       # VIX spike, compression, expiry-day crush, post-event relief
+│       ├── patterns.yaml         # Whipsaw, V-recovery, false breakout, slow bleed
+│       └── adversarial.yaml      # SL hunting, delta spikes, liquidity vacuum
+│
 └── data/                         # Runtime data (gitignored)
     ├── nifty_sentiment.db        # SQLite database
     ├── vol_distribution_cache.csv
@@ -282,3 +303,20 @@ See `docs/production-readiness.md` for the full gap analysis and prioritized che
 | 2026-02-12 | `config.yaml` | Add `self_improvement` section with 7 safety rail parameters | Safety rail thresholds need to be configurable |
 | 2026-02-12 | `core/config_schema.py` | Add `SelfImprovementConfig` Pydantic model with cross-validation (drift >= step) | Validate self-improvement config at startup |
 | 2026-02-12 | `tests/test_daily_review.py` (new) | 42 tests: trade classification (6), signal extraction (4), regime fit (5), signal reliability (4), parameter calibration (3), safety rails (5), parameter bounds (8), full review (4), models (3) | Test coverage for entire self-improvement system (411 total tests) |
+| 2026-02-13 | `simulation/` (new, 11 files) | Market Simulation & Stress Testing System — VirtualClock (time patching), GBM+jumps+OU price engine, BS-consistent chain synthesizer, data assembler bridging synthetic→real indicators/analytics/observation, tick-by-tick runner with progressive candle reveal, adversarial perturbation engine (SL hunt, false breakout, whipsaw, liquidity vacuum, delta spike), SimulationResult with self-improvement bridge to daily_review, Click CLI (run/run-all/compare/review/list-scenarios), Streamlit dashboard (live view + post-sim results + algo comparison) | Algorithms only train against 6-hour live sessions; need synthetic adversarial scenarios to accelerate self-improvement pipeline |
+| 2026-02-13 | `simulation/scenarios/` (6 YAML files, 28 scenarios) | normal (5), gaps (5), crisis (6 incl. multi-day), volatility (4), patterns (5), adversarial (3) | Comprehensive scenario library covering trending/range-bound/gaps/crashes/whipsaws/VIX spikes |
+| 2026-02-13 | `tests/test_sim_*.py` (5 new files, 75 tests) | test_sim_clock (13), test_sim_price_engine (18), test_sim_chain (14), test_sim_assembler (10), test_sim_runner (15 incl. end-to-end integration) | Full test coverage for simulation system (486 total tests) |
+| 2026-02-13 | `core/paper_trading_engine.py` | Lines 778, 843: use `refresh_ts` instead of `_time.time()` for cooldown/timestamp | In simulation, 375 ticks execute in seconds (wall clock), so cooldown never expired — only 1 trade per sim day. Now uses virtual time via `refresh_ts` with wall-clock fallback |
+| 2026-02-13 | `ui/simulation_tab.py` | Add "Run All" sub-tab (batch all 4 algos x all scenarios), seed help tooltip | No batch execution — each algo x scenario had to be run manually; seed purpose was unexplained |
+| 2026-02-13 | `ui/simulation_tab.py`, `ui/options_desk_tab.py` | Two-phase sim execution: button click sets `sim_running=True` + stores params + `st.rerun()`; next rerun skips `st_autorefresh` then executes sim | Options desk 60s autorefresh injected JS timer before sim started (tab render order); setting flag in same rerun was too late — timer already registered |
+| 2026-02-14 | `core/trade_strategies.py` | Add IV penalty (-15) to Bull Call Spread, Bear Put Spread (threshold 20), Long CE, Long PE (threshold 18) | Debit strategies lacked IV-based scoring — entered buying expensive premium in high-IV regimes (all 9 Cat-D trades had IV=28) |
+| 2026-02-14 | `core/trade_strategies.py` | Add BB width penalty (-15) to Bull Call Spread and Bear Put Spread (threshold 1.5%) | Bear Put Spread entered after breakout already happened (BB width 3.9%); no check on expanded Bollinger Bands |
+| 2026-02-14 | `core/strategy_rules.py` | Add `iv_high_penalty_threshold` and `bb_width_expanded_pct` scoring rule entries to 4 debit strategies | Machine-readable rules for new penalties so criticizer and tuning system can reference them |
+| 2026-02-14 | `core/parameter_bounds.py` | Add bounds: `iv_high_penalty_threshold` (12-30), `bb_width_expanded_pct` (0.8-3.0) | Safety bounds for new tunable param_keys |
+| 2026-02-14 | `core/paper_trading_engine.py` | Add `max_trades_per_day` gate in Phase 2 (default 6) — counts open + today's closed trades | Sentinel fired 10+ trades in crisis scenarios; no daily trade count limit |
+| 2026-02-14 | `config.yaml`, `core/config_schema.py` | Add `max_trades_per_day: 6` config + Pydantic validation | Configurable daily trade limit |
+| 2026-02-14 | `core/paper_trading_engine.py`, `config.yaml`, `core/config_schema.py` | Add `debit_min_score_to_trade: 61` — blocks all V1 debit trades (max score=60) | 3-cycle sim analysis: debit strategies 0-14% WR across 2,381 trades while credit is 95-100% WR. Raising bar to 61 makes sentinel credit-only → 100% WR, +655K across 28 scenarios |
+| 2026-02-14 | `core/trade_strategies.py`, `core/strategy_rules.py` | Lower IV penalty thresholds: all debit strategies 20/18→14 | Median entry IV=14.5%; threshold of 14 blocks debit entries at any elevated IV level |
+| 2026-02-14 | `config.yaml` | Change `debit_max_hold_minutes: 120` → `240`, debit SL 40%→25%, debit PT 50%→25% | 96% of exits were `closed_time_limit`; tighter SL cuts losses faster, lower PT more achievable |
+| 2026-02-14 | `core/paper_trading_engine.py` | Explicitly pass `entry_time=_now_ist()` and `entry_date` in `open_position()` | **Bug fix**: Pydantic `default_factory=_now_ist` captured pre-mock reference — simulation positions got wall-clock time, not virtual time. This broke `max_trades_per_day` gate (never matched dates) and `debit_max_hold_minutes` (hold time was wrong). Fixing this alone reduced trades from 1,514 to 65 per round |
+| 2026-02-14 | `ui/simulation_tab.py` | Add algorithm selector to "Run All" tab — pick one algo or all | Batch all scenarios for one algorithm without running full 4-algo matrix |

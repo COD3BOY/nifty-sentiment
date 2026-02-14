@@ -801,6 +801,19 @@ def _eval_bull_call_spread(
         else:
             score -= 10
 
+    # IV penalty — debit spread buys expensive premium when IV is high
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
+        score -= 15
+        reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
+
+    # BB width penalty — wide BB means breakout already happened
+    bw = _bb_width_pct(tech)
+    bb_exp = _p(ov, "bb_width_expanded_pct", 1.5)
+    if bw >= bb_exp:
+        score -= 15
+        reasons.append(f"BB width {bw:.1f}% >= {bb_exp:.1f}% — momentum may be exhausted")
+
     checks.append("EMA bullish alignment intact")
     checks.append(f"RSI below {rsi_ob:.0f} (currently {tech.rsi:.1f})")
     checks.append("Supertrend stays bullish")
@@ -874,6 +887,19 @@ def _eval_bear_put_spread(
             reasons.append(f"RSI {tech.rsi:.1f} oversold but trend confirmed — no penalty")
         else:
             score -= 10
+
+    # IV penalty — debit spread buys expensive premium when IV is high
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
+        score -= 15
+        reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
+
+    # BB width penalty — wide BB means breakout already happened
+    bw = _bb_width_pct(tech)
+    bb_exp = _p(ov, "bb_width_expanded_pct", 1.5)
+    if bw >= bb_exp:
+        score -= 15
+        reasons.append(f"BB width {bw:.1f}% >= {bb_exp:.1f}% — breakout already happened")
 
     checks.append("EMA bearish alignment intact")
     checks.append(f"RSI above {rsi_os:.0f} (currently {tech.rsi:.1f})")
@@ -1074,6 +1100,12 @@ def _eval_long_ce(
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — bullish options flow")
 
+    # IV penalty — naked long is highly IV-sensitive
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
+        score -= 15
+        reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
+
     checks.append(f"RSI not overbought (currently {tech.rsi:.1f})")
     checks.append("Supertrend still bullish")
     checks.append(f"Spot holds above VWAP ({tech.vwap:.0f})")
@@ -1146,6 +1178,12 @@ def _eval_long_pe(
     if analytics.pcr >= 0 and analytics.pcr < pcr_bear:
         score += 10
         reasons.append(f"PCR {analytics.pcr:.2f} — bearish options flow")
+
+    # IV penalty — naked long is highly IV-sensitive
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
+        score -= 15
+        reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
 
     checks.append(f"RSI not oversold (currently {tech.rsi:.1f})")
     checks.append("Supertrend still bearish")

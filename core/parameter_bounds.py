@@ -55,6 +55,10 @@ PARAMETER_BOUNDS: dict[str, tuple[float, float]] = {
     # --- Max pain proximity ---
     "max_pain_close_pct": (0.1, 0.6),
     "max_pain_near_pct": (0.3, 1.5),
+
+    # --- Debit strategy penalties ---
+    "iv_high_penalty_threshold": (12.0, 30.0),
+    "bb_width_expanded_pct": (0.8, 3.0),
 }
 
 # -------------------------------------------------------------------------
