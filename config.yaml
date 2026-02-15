@@ -139,12 +139,12 @@ paper_trading:
   lot_size: 65
   auto_execute: true
   min_score_to_trade: 50
-  debit_min_score_to_trade: 61
+  debit_min_score_to_trade: 70
   trade_cooldown_seconds: 60
   max_lots: 4
   capital_utilization: 0.70
   daily_loss_limit_pct: 3.0
-  debit_max_hold_minutes: 240
+  debit_max_hold_minutes: 300
   eod_close_time: "15:20"
   entry_start_time: "10:00"         # Warmup 9:15-10:00 — collect data before trading
   entry_cutoff_time: "15:10"
@@ -162,11 +162,11 @@ paper_trading:
   max_staleness_minutes: 20
   slippage_per_leg: 3.0
   stop_loss:
-    credit_fallback_multiplier: 2.0
-    debit_premium_pct: 0.25
+    credit_fallback_multiplier: 1.5
+    debit_premium_pct: 0.35
   profit_target:
     credit_pct: 0.30
-    debit_pct: 0.25
+    debit_pct: 0.50
   execution_cost:
     brokerage_per_order: 20
     stt_sell_pct: 0.001
@@ -385,4 +385,12 @@ self_improvement:
   reversion_trigger_losses: 5  # Consecutive losses to trigger reversion flag
   max_changes_per_session: 3   # Max param changes per review session
   rolling_window_days: 20      # Rolling window for signal reliability analysis
+
+context_engine:
+  bootstrap_days: 60             # Days of daily candles to fetch on startup
+  daily_candle_ticker: "^NSEI"   # yfinance ticker for daily candles
+  session_context_enabled: true
+  daily_context_enabled: true
+  weekly_context_enabled: true
+  vol_context_enabled: true
 

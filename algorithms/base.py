@@ -14,6 +14,7 @@ from core.options_models import (
 from core.paper_trading_models import PaperTradingState
 
 if TYPE_CHECKING:
+    from core.context_models import MarketContext
     from core.observation import ObservationSnapshot
 
 
@@ -38,6 +39,7 @@ class TradingAlgorithm(ABC):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> list[TradeSuggestion]:
         """Generate trade suggestions from shared market data."""
 
@@ -52,6 +54,7 @@ class TradingAlgorithm(ABC):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> PaperTradingState:
         """Manage existing positions and optionally open new ones.
 

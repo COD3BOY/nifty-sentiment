@@ -177,4 +177,5 @@ class OptionsDeskSnapshot(BaseModel):
     candle_meta: FetchMeta | None = None
     chain_meta: FetchMeta | None = None
     observation: Any = None  # ObservationSnapshot | None — typed as Any to avoid Pydantic resolution issues
+    context: Any = None  # MarketContext | None — typed as Any to avoid Pydantic resolution issues
     timestamp: datetime = Field(default_factory=datetime.utcnow)

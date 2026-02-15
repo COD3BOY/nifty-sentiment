@@ -291,6 +291,17 @@ def _eval_short_straddle(
     if bw < bb_tight:
         score += 10
         reasons.append(f"Bollinger Bands tight ({bw:.1f}%) — range-bound market")
+
+    # Regime penalties — credit is vulnerable when IV is high or expanding
+    iv_pct_thresh = _p(ov, "iv_percentile_high_threshold", 75)
+    if analytics.iv_percentile > iv_pct_thresh:
+        score -= 10
+        reasons.append(f"IV percentile {analytics.iv_percentile:.0f}% > {iv_pct_thresh:.0f}% — elevated vega risk")
+    iv_stress = _p(ov, "iv_stress_threshold", 20)
+    if analytics.atm_iv > iv_stress:
+        score -= 10
+        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% > {iv_stress:.0f}% — stress regime")
+
     checks.append("Ensure no major event/news expected")
     checks.append(f"RSI stays in {rsi_n_lo:.0f}-{rsi_n_hi:.0f} range (currently {tech.rsi:.1f})")
     checks.append(f"Spot stays near {analytics.max_pain:.0f} max pain")
@@ -390,6 +401,16 @@ def _eval_short_strangle(
     if bw < bb_tight:
         score += 10
         reasons.append(f"BB width {bw:.1f}% — compressed, range-bound")
+
+    # Regime penalties — credit is vulnerable when IV is high or expanding
+    iv_pct_thresh = _p(ov, "iv_percentile_high_threshold", 75)
+    if analytics.iv_percentile > iv_pct_thresh:
+        score -= 10
+        reasons.append(f"IV percentile {analytics.iv_percentile:.0f}% > {iv_pct_thresh:.0f}% — elevated vega risk")
+    iv_stress = _p(ov, "iv_stress_threshold", 20)
+    if analytics.atm_iv > iv_stress:
+        score -= 10
+        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% > {iv_stress:.0f}% — stress regime")
 
     checks.append(f"Support holds at {analytics.support_strike:.0f}")
     checks.append(f"Resistance holds at {analytics.resistance_strike:.0f}")
@@ -650,6 +671,16 @@ def _eval_bull_put_spread(
         score -= 10
         checks.append(f"RSI {tech.rsi:.1f} — overbought, wait for pullback")
 
+    # Regime penalties — credit is vulnerable when IV is high or expanding
+    iv_pct_thresh = _p(ov, "iv_percentile_high_threshold", 75)
+    if analytics.iv_percentile > iv_pct_thresh:
+        score -= 10
+        reasons.append(f"IV percentile {analytics.iv_percentile:.0f}% > {iv_pct_thresh:.0f}% — elevated vega risk")
+    iv_stress = _p(ov, "iv_stress_threshold", 20)
+    if analytics.atm_iv > iv_stress:
+        score -= 10
+        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% > {iv_stress:.0f}% — stress regime")
+
     checks.append(f"Supertrend direction stays bullish")
     checks.append(f"Support at {analytics.support_strike:.0f} holds")
     checks.append(f"RSI stays below {rsi_ob:.0f} (currently {tech.rsi:.1f})")
@@ -728,6 +759,16 @@ def _eval_bear_call_spread(
         score -= 10
         checks.append(f"RSI {tech.rsi:.1f} — oversold, wait for bounce")
 
+    # Regime penalties — credit is vulnerable when IV is high or expanding
+    iv_pct_thresh = _p(ov, "iv_percentile_high_threshold", 75)
+    if analytics.iv_percentile > iv_pct_thresh:
+        score -= 10
+        reasons.append(f"IV percentile {analytics.iv_percentile:.0f}% > {iv_pct_thresh:.0f}% — elevated vega risk")
+    iv_stress = _p(ov, "iv_stress_threshold", 20)
+    if analytics.atm_iv > iv_stress:
+        score -= 10
+        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% > {iv_stress:.0f}% — stress regime")
+
     checks.append("Supertrend direction stays bearish")
     checks.append(f"Resistance at {analytics.resistance_strike:.0f} holds")
     checks.append(f"RSI stays above {rsi_os:.0f} (currently {tech.rsi:.1f})")
@@ -802,7 +843,7 @@ def _eval_bull_call_spread(
             score -= 10
 
     # IV penalty — debit spread buys expensive premium when IV is high
-    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 18)
     if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
         score -= 15
         reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
@@ -813,6 +854,12 @@ def _eval_bull_call_spread(
     if bw >= bb_exp:
         score -= 15
         reasons.append(f"BB width {bw:.1f}% >= {bb_exp:.1f}% — momentum may be exhausted")
+
+    # Pre-breakout tight BB bonus — compression before expansion
+    bb_tight = _p(ov, "bb_width_tight_pct", 1.0)
+    if bw < bb_tight and bw > 0.1:
+        score += 5
+        reasons.append(f"BB tight ({bw:.1f}%) — pre-breakout compression")
 
     checks.append("EMA bullish alignment intact")
     checks.append(f"RSI below {rsi_ob:.0f} (currently {tech.rsi:.1f})")
@@ -889,7 +936,7 @@ def _eval_bear_put_spread(
             score -= 10
 
     # IV penalty — debit spread buys expensive premium when IV is high
-    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 18)
     if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
         score -= 15
         reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
@@ -900,6 +947,12 @@ def _eval_bear_put_spread(
     if bw >= bb_exp:
         score -= 15
         reasons.append(f"BB width {bw:.1f}% >= {bb_exp:.1f}% — breakout already happened")
+
+    # Pre-breakout tight BB bonus — compression before expansion
+    bb_tight = _p(ov, "bb_width_tight_pct", 1.0)
+    if bw < bb_tight and bw > 0.1:
+        score += 5
+        reasons.append(f"BB tight ({bw:.1f}%) — pre-breakout compression")
 
     checks.append("EMA bearish alignment intact")
     checks.append(f"RSI above {rsi_os:.0f} (currently {tech.rsi:.1f})")
@@ -990,6 +1043,16 @@ def _eval_iron_condor(
     else:
         score -= 5
         reasons.append("IV data unavailable — cannot assess volatility")
+
+    # Regime penalties — credit is vulnerable when IV is high or expanding
+    iv_pct_thresh = _p(ov, "iv_percentile_high_threshold", 75)
+    if analytics.iv_percentile > iv_pct_thresh:
+        score -= 10
+        reasons.append(f"IV percentile {analytics.iv_percentile:.0f}% > {iv_pct_thresh:.0f}% — elevated vega risk")
+    iv_stress = _p(ov, "iv_stress_threshold", 20)
+    if analytics.atm_iv > iv_stress:
+        score -= 10
+        reasons.append(f"ATM IV {analytics.atm_iv:.1f}% > {iv_stress:.0f}% — stress regime")
 
     pcr_bal_lo = _p(ov, "pcr_balanced_low", 0.85)
     pcr_bal_hi = _p(ov, "pcr_balanced_high", 1.15)
@@ -1101,7 +1164,7 @@ def _eval_long_ce(
         reasons.append(f"PCR {analytics.pcr:.2f} — bullish options flow")
 
     # IV penalty — naked long is highly IV-sensitive
-    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 18)
     if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
         score -= 15
         reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")
@@ -1180,7 +1243,7 @@ def _eval_long_pe(
         reasons.append(f"PCR {analytics.pcr:.2f} — bearish options flow")
 
     # IV penalty — naked long is highly IV-sensitive
-    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 14)
+    iv_pen_thresh = _p(ov, "iv_high_penalty_threshold", 18)
     if analytics.atm_iv > 0 and analytics.atm_iv >= iv_pen_thresh:
         score -= 15
         reasons.append(f"IV {analytics.atm_iv:.1f}% >= {iv_pen_thresh:.0f}% — buying expensive premium")

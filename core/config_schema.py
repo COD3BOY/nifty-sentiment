@@ -110,6 +110,19 @@ class SelfImprovementConfig(BaseModel):
         extra = "allow"
 
 
+class ContextEngineConfig(BaseModel):
+    """Validation for context engine parameters."""
+    bootstrap_days: int = Field(ge=10, le=365, default=60)
+    daily_candle_ticker: str = "^NSEI"
+    session_context_enabled: bool = True
+    daily_context_enabled: bool = True
+    weekly_context_enabled: bool = True
+    vol_context_enabled: bool = True
+
+    class Config:
+        extra = "allow"
+
+
 class OptionsDeskConfig(BaseModel):
     symbol: str = "NIFTY"
     lot_size: int = Field(gt=0, default=65)
@@ -138,6 +151,7 @@ class NiftyConfig(BaseModel):
     algorithms: dict[str, Any] = Field(default_factory=dict)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     self_improvement: SelfImprovementConfig = Field(default_factory=SelfImprovementConfig)
+    context_engine: ContextEngineConfig = Field(default_factory=ContextEngineConfig)
 
     class Config:
         extra = "allow"

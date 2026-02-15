@@ -85,7 +85,7 @@ def render_options_desk_tab() -> None:
     st.caption("Option chain analytics, technical indicators & aggregated signals")
 
     # --- Auto-refresh during market hours ---
-    if _is_market_hours():
+    if _is_market_hours() and not st.session_state.get("sim_running", False):
         st_autorefresh(interval=60_000, key="options_desk_autorefresh")
 
     # --- Fetch: auto on first load, re-fetch every ~60s during market hours ---
@@ -99,6 +99,8 @@ def render_options_desk_tab() -> None:
         with st.spinner("Fetching options data..."):
             st.session_state.options_snapshot = engine.fetch_snapshot()
             st.session_state.options_last_refresh = time.time()
+            # Store candle DataFrame for context engine
+            st.session_state.options_candle_df = engine.get_candle_dataframe()
             # Populate session state timestamps for System Health Data Freshness
             snap_meta = st.session_state.options_snapshot
             chain_m = getattr(snap_meta, "chain_meta", None) if snap_meta else None
@@ -146,6 +148,76 @@ def render_options_desk_tab() -> None:
         with mc_cols[4]:
             bias_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(obs.bias, "gray")
             st.metric("Bias", obs.bias.upper())
+
+    # ================================================================
+    # MARKET CONTEXT (prior day, weekly, vol regime, session)
+    # ================================================================
+    _mctx = getattr(snap, "context", None)
+    if _mctx is None:
+        # Fallback: try to get from session state (set by app.py)
+        _mctx = st.session_state.get("_market_context")
+    if _mctx and (_mctx.prior_day or _mctx.current_week or _mctx.vol.regime != "neutral"):
+        with st.expander("Market Context", expanded=False):
+            ctx_cols = st.columns(4)
+
+            # Prior Day
+            with ctx_cols[0]:
+                st.markdown("**Prior Day**")
+                if _mctx.prior_day:
+                    pd_ = _mctx.prior_day
+                    chg_color = "green" if pd_.close_vs_open == "up" else "red" if pd_.close_vs_open == "down" else "gray"
+                    body_str = f"{pd_.body_pct:.2f}%"
+                    st.markdown(f"Close: **{pd_.close:,.1f}** (:{chg_color}[{pd_.close_vs_open.upper()}] {body_str})")
+                    ema_str = ""
+                    if pd_.close_above_ema20:
+                        ema_str += "above EMA20"
+                    else:
+                        ema_str += "below EMA20"
+                    if pd_.close_above_ema50:
+                        ema_str += ", above EMA50"
+                    else:
+                        ema_str += ", below EMA50"
+                    st.caption(f"RSI: {pd_.rsi_close:.1f} | {ema_str}")
+                    st.caption(f"Candle: {pd_.candle_type} | Range: {pd_.range_pct:.2f}%")
+                else:
+                    st.caption("No data")
+
+            # This Week
+            with ctx_cols[1]:
+                st.markdown("**This Week**")
+                if _mctx.current_week:
+                    wk = _mctx.current_week
+                    wk_color = "green" if wk.weekly_trend == "bullish" else "red" if wk.weekly_trend == "bearish" else "gray"
+                    st.markdown(f":{wk_color}[{wk.weekly_trend.upper()}] ({wk.weekly_change_pct:+.2f}%)")
+                    st.caption(f"Range: {wk.weekly_range_pct:.2f}% | Days up/down: {wk.days_up}/{wk.days_down}")
+                    st.caption(f"vs Prior: {wk.week_vs_prior} | EMA20: {wk.ema20_slope}")
+                else:
+                    st.caption("No data")
+
+            # Vol Regime
+            with ctx_cols[2]:
+                st.markdown("**Vol Regime**")
+                vol = _mctx.vol
+                regime_color = {
+                    "sell_premium": "green", "buy_premium": "orange",
+                    "stand_down": "red", "neutral": "gray",
+                }.get(vol.regime, "gray")
+                st.markdown(f":{regime_color}[{vol.regime.replace('_', ' ').upper()}]")
+                if vol.regime_duration_days > 0:
+                    st.caption(f"Since: {vol.regime_since} ({vol.regime_duration_days}d)")
+                st.caption(f"RV: {vol.rv_trend} | Changes 30d: {vol.regime_changes_30d}")
+
+            # Session & Composite
+            with ctx_cols[3]:
+                st.markdown("**Session / Bias**")
+                sess = _mctx.session
+                trend_color = "green" if sess.session_trend == "trending_up" else "red" if sess.session_trend == "trending_down" else "gray"
+                st.markdown(f"Trend: :{trend_color}[{sess.session_trend.replace('_', ' ')}]")
+                st.caption(f"EMA: {sess.ema_alignment} | BB: {sess.bb_position} | RSI: {sess.rsi_trajectory}")
+                bias_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(_mctx.context_bias, "gray")
+                st.markdown(f"Context Bias: :{bias_color}[{_mctx.context_bias.upper()}]")
+                mdt_color = {"bullish": "green", "bearish": "red", "neutral": "gray"}.get(_mctx.multi_day_trend, "gray")
+                st.caption(f"Multi-day: :{mdt_color}[{_mctx.multi_day_trend}]")
 
     # ================================================================
     # MARKET PULSE (top bar)

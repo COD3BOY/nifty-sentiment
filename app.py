@@ -49,6 +49,21 @@ if "pm_last_refresh" not in st.session_state:
     st.session_state.pm_last_refresh = 0.0
 engine: SentimentEngine = st.session_state.engine
 
+# --- Context Engine (singleton, bootstraps on first load) ---
+from core.context_engine import ContextEngine
+
+@st.cache_resource
+def _init_context_engine():
+    ce = ContextEngine(config)
+    try:
+        ce.bootstrap_history()
+        ce.update_vol_context()
+    except Exception:
+        pass  # non-critical — context degrades gracefully
+    return ce
+
+context_engine = _init_context_engine()
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 LEVEL_COLORS = {
@@ -155,10 +170,15 @@ _algo_tab_labels = [f"📈 {_algo_registry[n].display_name}" for n in _enabled_a
 _all_tab_labels = ["🏥 System Health", "🌅 Pre-Market Analysis", "⚡ Options Desk"] + _algo_tab_labels
 if len(_enabled_algos) >= 2:
     _all_tab_labels.append("📊 Comparison")
+_all_tab_labels.append("🧪 Simulation")
 _all_tabs = st.tabs(_all_tab_labels)
 tab_health, tab_premarket, tab_options = _all_tabs[0], _all_tabs[1], _all_tabs[2]
 algo_tabs = _all_tabs[3:3 + len(_enabled_algos)]
-tab_comparison = _all_tabs[-1] if len(_enabled_algos) >= 2 else None
+_next_idx = 3 + len(_enabled_algos)
+tab_comparison = _all_tabs[_next_idx] if len(_enabled_algos) >= 2 else None
+if len(_enabled_algos) >= 2:
+    _next_idx += 1
+tab_simulation = _all_tabs[_next_idx]
 
 
 # ============================================================
@@ -435,6 +455,17 @@ from ui.paper_trading_tab import render_paper_trading_tab
 
 snap = st.session_state.get("options_snapshot")
 
+# Update context engine with latest session data
+_snap_candle_df = st.session_state.get("options_candle_df")
+if snap and snap.technicals:
+    context_engine.update_session(
+        candle_df=_snap_candle_df,
+        technicals=snap.technicals,
+        analytics=snap.analytics,
+        observation=getattr(snap, "observation", None),
+    )
+_market_context = context_engine.get_context()
+
 # Pre-compute all algorithm suggestions (shared with Options Desk tab)
 algo_suggestions_map: dict[str, list] = {}
 algo_instances_map = {}
@@ -447,6 +478,7 @@ for algo_name in _enabled_algos:
             algo_suggestions_map[algo_name] = algo_instance.generate_suggestions(
                 snap.chain, snap.technicals, snap.analytics,
                 observation=getattr(snap, "observation", None),
+                context=_market_context,
             )
         except Exception:
             algo_suggestions_map[algo_name] = []
@@ -467,6 +499,7 @@ for algo_tab, algo_name in zip(algo_tabs, _enabled_algos):
             algo_description=_algo_registry[algo_name].description,
             evaluate_fn=algo_instances_map[algo_name].evaluate_and_manage,
             observation=getattr(snap, "observation", None) if snap else None,
+            context=_market_context,
         )
 
 # ============================================================
@@ -479,3 +512,10 @@ if tab_comparison is not None:
             _enabled_algos,
             {n: _algo_registry[n].display_name for n in _enabled_algos},
         )
+
+# ============================================================
+# SIMULATION TAB
+# ============================================================
+with tab_simulation:
+    from ui.simulation_tab import render_simulation_tab
+    render_simulation_tab()

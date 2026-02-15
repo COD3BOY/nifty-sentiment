@@ -162,6 +162,36 @@ class ReviewSessionRow(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class DailyContextRow(Base):
+    """End-of-day market context for one trading session."""
+
+    __tablename__ = "daily_context"
+
+    date = Column(String(10), primary_key=True)  # "YYYY-MM-DD"
+    data_json = Column(Text, nullable=False)
+
+
+class WeeklyContextRow(Base):
+    """Weekly market context aggregated from DailyContext rows."""
+
+    __tablename__ = "weekly_context"
+
+    week_start = Column(String(10), primary_key=True)  # "YYYY-MM-DD" (Monday)
+    data_json = Column(Text, nullable=False)
+
+
+class VolRegimeRow(Base):
+    """Daily vol regime log for persistence tracking."""
+
+    __tablename__ = "vol_regime_log"
+
+    date = Column(String(10), primary_key=True)  # "YYYY-MM-DD"
+    regime = Column(String(20), nullable=False)
+    p_rv = Column(Float, nullable=False)
+    p_vov = Column(Float, nullable=False)
+    p_vrp = Column(Float, nullable=False)
+
+
 class SentimentDatabase:
     def __init__(self):
         config = load_config()
@@ -658,6 +688,127 @@ class SentimentDatabase:
                     "trades_reviewed": r.trades_reviewed,
                     "summary": json.loads(r.summary_json),
                     "created_at": r.created_at,
+                }
+                for r in rows
+            ]
+
+    # ------------------------------------------------------------------
+    # Context engine persistence
+    # ------------------------------------------------------------------
+
+    def save_daily_context(self, ctx) -> None:
+        """Save a DailyContext (or update if date already exists)."""
+        with self.SessionLocal() as session:
+            row = session.query(DailyContextRow).filter(
+                DailyContextRow.date == ctx.date
+            ).first()
+            data = ctx.model_dump(mode="json")
+            if row:
+                row.data_json = _dumps(data)
+            else:
+                session.add(DailyContextRow(date=ctx.date, data_json=_dumps(data)))
+            session.commit()
+
+    def get_daily_context(self, date: str):
+        """Return DailyContext for a specific date, or None."""
+        from core.context_models import DailyContext
+
+        with self.SessionLocal() as session:
+            row = session.query(DailyContextRow).filter(
+                DailyContextRow.date == date
+            ).first()
+            if not row:
+                return None
+            return DailyContext.model_validate(json.loads(row.data_json))
+
+    def get_recent_daily_contexts(self, n: int = 5) -> list:
+        """Return the most recent N DailyContext objects (newest first)."""
+        from core.context_models import DailyContext
+
+        with self.SessionLocal() as session:
+            rows = (
+                session.query(DailyContextRow)
+                .order_by(DailyContextRow.date.desc())
+                .limit(n)
+                .all()
+            )
+            return [
+                DailyContext.model_validate(json.loads(r.data_json))
+                for r in rows
+            ]
+
+    def save_weekly_context(self, ctx) -> None:
+        """Save a WeeklyContext (or update if week_start already exists)."""
+        with self.SessionLocal() as session:
+            row = session.query(WeeklyContextRow).filter(
+                WeeklyContextRow.week_start == ctx.week_start
+            ).first()
+            data = ctx.model_dump(mode="json")
+            if row:
+                row.data_json = _dumps(data)
+            else:
+                session.add(WeeklyContextRow(week_start=ctx.week_start, data_json=_dumps(data)))
+            session.commit()
+
+    def get_weekly_context(self, week_start: str):
+        """Return WeeklyContext for a specific week_start, or None."""
+        from core.context_models import WeeklyContext
+
+        with self.SessionLocal() as session:
+            row = session.query(WeeklyContextRow).filter(
+                WeeklyContextRow.week_start == week_start
+            ).first()
+            if not row:
+                return None
+            return WeeklyContext.model_validate(json.loads(row.data_json))
+
+    def get_recent_weekly_contexts(self, n: int = 2) -> list:
+        """Return the most recent N WeeklyContext objects (newest first)."""
+        from core.context_models import WeeklyContext
+
+        with self.SessionLocal() as session:
+            rows = (
+                session.query(WeeklyContextRow)
+                .order_by(WeeklyContextRow.week_start.desc())
+                .limit(n)
+                .all()
+            )
+            return [
+                WeeklyContext.model_validate(json.loads(r.data_json))
+                for r in rows
+            ]
+
+    def save_vol_regime(self, date: str, regime: str, p_rv: float, p_vov: float, p_vrp: float) -> None:
+        """Save a vol regime log entry (or update if date already exists)."""
+        with self.SessionLocal() as session:
+            row = session.query(VolRegimeRow).filter(VolRegimeRow.date == date).first()
+            if row:
+                row.regime = regime
+                row.p_rv = p_rv
+                row.p_vov = p_vov
+                row.p_vrp = p_vrp
+            else:
+                session.add(VolRegimeRow(
+                    date=date, regime=regime, p_rv=p_rv, p_vov=p_vov, p_vrp=p_vrp,
+                ))
+            session.commit()
+
+    def get_vol_regime_history(self, days: int = 30) -> list[dict[str, Any]]:
+        """Return vol regime log entries for the last N days (newest first)."""
+        with self.SessionLocal() as session:
+            rows = (
+                session.query(VolRegimeRow)
+                .order_by(VolRegimeRow.date.desc())
+                .limit(days)
+                .all()
+            )
+            return [
+                {
+                    "date": r.date,
+                    "regime": r.regime,
+                    "p_rv": r.p_rv,
+                    "p_vov": r.p_vov,
+                    "p_vrp": r.p_vrp,
                 }
                 for r in rows
             ]

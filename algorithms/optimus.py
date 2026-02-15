@@ -63,6 +63,7 @@ from core.options_utils import (
 )
 
 if TYPE_CHECKING:
+    from core.context_models import MarketContext
     from core.observation import ObservationSnapshot
 
 logger = logging.getLogger(__name__)
@@ -1084,6 +1085,7 @@ class OptimusAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> list[TradeSuggestion]:
         """Generate hedge trade candidates independently (no V1 dependency)."""
         if not is_market_open():
@@ -1190,6 +1192,7 @@ class OptimusAlgorithm(TradingAlgorithm):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> PaperTradingState:
         """Manage positions with hedge-specific risk rules."""
         # Market-open guard: skip all trading logic when market is closed

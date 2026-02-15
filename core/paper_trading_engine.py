@@ -409,6 +409,9 @@ def open_position(
         )
         entry_context_dict = ctx.model_dump(mode="json")
 
+    # Capture ATM IV at entry for IV-expansion exit
+    entry_iv = analytics.atm_iv if analytics else 0.0
+
     return PaperPosition(
         strategy=suggestion.strategy.value,
         strategy_type=strategy_type.value,
@@ -426,6 +429,7 @@ def open_position(
         entry_context=entry_context_dict,
         entry_time=_now_ist(),
         entry_date=_now_ist().strftime("%Y-%m-%d"),
+        entry_atm_iv=entry_iv,
     )
 
 
@@ -639,6 +643,7 @@ def evaluate_and_manage(
     lot_size: int | None = None,
     refresh_ts: float = 0.0,
     observation=None,
+    context=None,
 ) -> PaperTradingState:
     """Main paper trading loop. Pure function: state in, state out.
 
@@ -695,6 +700,25 @@ def evaluate_and_manage(
 
         # Check exit conditions
         exit_reason = check_exit_conditions(position)
+
+        # IV-expansion exit for credit positions
+        if (
+            exit_reason is None
+            and analytics
+            and position.entry_atm_iv > 0
+            and position.strategy_type == StrategyType.CREDIT.value
+            and analytics.atm_iv > 0
+        ):
+            iv_expansion_threshold = cfg.get("iv_expansion_exit_pts", 3.0)
+            iv_expansion = analytics.atm_iv - position.entry_atm_iv
+            if iv_expansion >= iv_expansion_threshold:
+                exit_reason = PositionStatus.CLOSED_IV_EXPANSION
+                logger.info(
+                    "IV expansion exit: %s | IV %.1f%% → %.1f%% (+%.1f pts > %.1f threshold)",
+                    position.strategy, position.entry_atm_iv, analytics.atm_iv,
+                    iv_expansion, iv_expansion_threshold,
+                )
+
         if exit_reason:
             _closed_pos, record = close_position(
                 position, exit_reason,
@@ -825,13 +849,15 @@ def evaluate_and_manage(
                 )
                 continue
 
-            effective_min = debit_min_score if classify_strategy(suggestion.strategy) == StrategyType.DEBIT else min_score
+            is_debit = classify_strategy(suggestion.strategy) == StrategyType.DEBIT
+            effective_min = debit_min_score if is_debit else min_score
             if suggestion.score < effective_min:
                 logger.debug("Skipping %s — score %.1f < min %d", suggestion.strategy.value, suggestion.score, effective_min)
                 continue
-            # (d) High-confidence-only gate
-            if suggestion.confidence != "High":
-                logger.info("Skipping %s — confidence %s (require High)", suggestion.strategy.value, suggestion.confidence)
+            # (d) Confidence gate — High for credit, Medium+ for debit
+            min_confidence = {"High"} if not is_debit else {"High", "Medium"}
+            if suggestion.confidence not in min_confidence:
+                logger.info("Skipping %s — confidence %s (require %s)", suggestion.strategy.value, suggestion.confidence, "High" if not is_debit else "Medium+")
                 continue
             block_reason = _is_blocked_by_expiry_guards(suggestion, chain, lot_size)
             if block_reason:

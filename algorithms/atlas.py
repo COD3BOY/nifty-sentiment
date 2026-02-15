@@ -63,6 +63,7 @@ from core.options_utils import (
 from core.vol_distribution import VolSnapshot, get_today_vol_snapshot
 
 if TYPE_CHECKING:
+    from core.context_models import MarketContext
     from core.observation import ObservationSnapshot
 
 logger = logging.getLogger(__name__)
@@ -1040,6 +1041,7 @@ class AtlasAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> list[TradeSuggestion]:
         if not is_market_open():
             return []
@@ -1157,6 +1159,7 @@ class AtlasAlgorithm(TradingAlgorithm):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> PaperTradingState:
         # Market-open guard: skip all trading logic when market is closed
         if not is_market_open():

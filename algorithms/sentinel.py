@@ -20,6 +20,7 @@ from core.paper_trading_models import PaperTradingState
 from core.trade_strategies import generate_trade_suggestions as _v1_generate_suggestions
 
 if TYPE_CHECKING:
+    from core.context_models import MarketContext
     from core.observation import ObservationSnapshot
 
 
@@ -37,6 +38,7 @@ class SentinelAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> list[TradeSuggestion]:
         return _v1_generate_suggestions(analytics, technicals, chain)
 
@@ -50,6 +52,7 @@ class SentinelAlgorithm(TradingAlgorithm):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> PaperTradingState:
         return _v1_evaluate_and_manage(
             state, suggestions, chain,

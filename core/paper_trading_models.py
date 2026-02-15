@@ -27,6 +27,7 @@ class PositionStatus(str, Enum):
     CLOSED_MANUAL = "closed_manual"
     CLOSED_EOD = "closed_eod"
     CLOSED_TIME_LIMIT = "closed_time_limit"
+    CLOSED_IV_EXPANSION = "closed_iv_expansion"
 
 
 class MarginSource(str, Enum):
@@ -84,6 +85,7 @@ class PaperPosition(BaseModel):
     sessions_held: int = 0     # number of trading sessions position has been held
     entry_date: str | None = None  # date string when position was opened
     last_session_date: str | None = None  # last date sessions_held was incremented
+    entry_atm_iv: float = 0.0  # ATM IV at entry time — for IV-expansion exit
 
     @computed_field  # type: ignore[prop-decorator]
     @property

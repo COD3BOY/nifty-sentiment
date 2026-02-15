@@ -64,6 +64,7 @@ from core.options_utils import (
 )
 
 if TYPE_CHECKING:
+    from core.context_models import MarketContext
     from core.observation import ObservationSnapshot
 
 logger = logging.getLogger(__name__)
@@ -560,6 +561,7 @@ class JarvisAlgorithm(TradingAlgorithm):
         technicals: TechnicalIndicators,
         analytics: OptionsAnalytics,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> list[TradeSuggestion]:
         """Generate and validate suggestions using Jarvis rules.
 
@@ -651,6 +653,7 @@ class JarvisAlgorithm(TradingAlgorithm):
         lot_size: int | None = None,
         refresh_ts: float = 0.0,
         observation: ObservationSnapshot | None = None,
+        context: MarketContext | None = None,
     ) -> PaperTradingState:
         """Manage positions with institutional risk rules."""
         # Market-open guard: skip all trading logic when market is closed
