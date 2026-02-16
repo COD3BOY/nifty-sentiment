@@ -1,0 +1,556 @@
+# Crisis scenarios — extreme market stress, multi-day events, policy shocks
+# Categories: crash, multi-day, contagion, policy
+
+flash_crash:
+  name: flash_crash
+  description: >
+    Calm morning session followed by a sudden -3% flash crash at 11:30 AM
+    (minute 135). Triggered by algo selling cascade. VIX spikes from 14 to 25.
+    Partial recovery in the last 90 minutes. Tests stop-loss execution
+    under extreme conditions.
+  category: crash
+
+  price_path:
+    open_price: 23800.0
+    phases:
+      - start_minute: 0
+        end_minute: 135
+        drift: 0.02
+        volatility: 0.10
+      - start_minute: 135
+        end_minute: 165
+        drift: -1.50
+        volatility: 0.55
+        jump_intensity: 8.0
+        jump_mean: -0.03
+        jump_std: 0.02
+      - start_minute: 165
+        end_minute: 375
+        drift: 0.15
+        volatility: 0.25
+        mean_reversion_kappa: 3.0
+        mean_reversion_level: 23200.0
+    volume_base: 15000000.0
+
+  vix:
+    open_level: 14.0
+    mean_level: 18.0
+    volatility: 0.6
+    kappa: 2.0
+    spot_correlation: -0.9
+    spikes:
+      135: 25.0
+      150: 27.0
+      165: 23.0
+
+  vol_regime:
+    rv_5: 35.0
+    rv_10: 25.0
+    rv_20: 18.0
+    vov_20: 8.0
+    vrp: -5.0
+    p_rv: 0.98
+    p_vov: 0.95
+    p_vrp: 0.05
+
+  chain:
+    expiry_dte: 3
+    atm_iv: 28.0
+    iv_skew_slope: -0.18
+    iv_skew_curvature: 0.05
+    iv_percentile: 96.0
+    bid_ask_spread_pct: 0.04
+    stress_spread_multiplier: 4.0
+
+overnight_crisis:
+  name: overnight_crisis
+  description: >
+    Extreme overnight event causes -4% gap down at open. Global markets
+    crashed during Asian session. Sustained selling all day with no
+    meaningful recovery. VIX opens at 28 and stays elevated.
+  category: crash
+
+  price_path:
+    open_price: 22080.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: -0.30
+        volatility: 0.40
+        jump_intensity: 3.0
+        jump_mean: -0.02
+        jump_std: 0.025
+      - start_minute: 60
+        end_minute: 375
+        drift: -0.10
+        volatility: 0.30
+    volume_base: 14000000.0
+
+  gap:
+    gap_pct: -0.04
+    prev_close: 23000.0
+    gap_fill_probability: 0.05
+    gap_fill_speed: 375
+
+  vix:
+    open_level: 28.0
+    mean_level: 26.0
+    volatility: 0.5
+    kappa: 2.0
+    spot_correlation: -0.9
+
+  vol_regime:
+    rv_5: 40.0
+    rv_10: 30.0
+    rv_20: 22.0
+    vov_20: 9.0
+    vrp: -8.0
+    p_rv: 0.99
+    p_vov: 0.97
+    p_vrp: 0.02
+
+  chain:
+    expiry_dte: 4
+    atm_iv: 32.0
+    iv_skew_slope: -0.20
+    iv_skew_curvature: 0.06
+    iv_percentile: 98.0
+    bid_ask_spread_pct: 0.05
+    stress_spread_multiplier: 5.0
+
+multi_day_meltdown:
+  name: multi_day_meltdown
+  description: >
+    Three-day selling event with each day worse than the last.
+    Volatility escalates as stops are triggered and margin calls mount.
+    Day 1: -1.2%, Day 2: -2.0%, Day 3: -2.8%. Tests multi-session
+    drawdown management and position sizing under sustained stress.
+  category: multi-day
+
+  days:
+    - price_path:
+        open_price: 23800.0
+        phases:
+          - start_minute: 0
+            end_minute: 375
+            drift: -0.20
+            volatility: 0.18
+        volume_base: 8000000.0
+      vix:
+        open_level: 16.0
+        mean_level: 18.0
+        volatility: 0.35
+        kappa: 3.0
+        spot_correlation: -0.8
+      vol_regime:
+        rv_5: 18.0
+        rv_10: 15.0
+        rv_20: 14.0
+        vov_20: 4.0
+        vrp: -1.0
+        p_rv: 0.75
+        p_vov: 0.70
+        p_vrp: 0.20
+      chain:
+        expiry_dte: 5
+        atm_iv: 19.0
+        iv_skew_slope: -0.12
+        iv_percentile: 70.0
+
+    - price_path:
+        open_price: 23514.0
+        phases:
+          - start_minute: 0
+            end_minute: 375
+            drift: -0.30
+            volatility: 0.25
+            jump_intensity: 2.0
+            jump_mean: -0.015
+            jump_std: 0.02
+        volume_base: 11000000.0
+      gap:
+        gap_pct: -0.008
+        prev_close: 23514.0
+      vix:
+        open_level: 20.0
+        mean_level: 22.0
+        volatility: 0.45
+        kappa: 2.5
+        spot_correlation: -0.85
+      vol_regime:
+        rv_5: 25.0
+        rv_10: 20.0
+        rv_20: 16.0
+        vov_20: 6.0
+        vrp: -3.0
+        p_rv: 0.88
+        p_vov: 0.82
+        p_vrp: 0.08
+      chain:
+        expiry_dte: 4
+        atm_iv: 24.0
+        iv_skew_slope: -0.15
+        iv_percentile: 85.0
+        bid_ask_spread_pct: 0.02
+        stress_spread_multiplier: 2.0
+
+    - price_path:
+        open_price: 23044.0
+        phases:
+          - start_minute: 0
+            end_minute: 120
+            drift: -0.40
+            volatility: 0.35
+            jump_intensity: 4.0
+            jump_mean: -0.02
+            jump_std: 0.025
+          - start_minute: 120
+            end_minute: 375
+            drift: -0.20
+            volatility: 0.30
+        volume_base: 14000000.0
+      gap:
+        gap_pct: -0.015
+        prev_close: 23044.0
+      vix:
+        open_level: 25.0
+        mean_level: 27.0
+        volatility: 0.55
+        kappa: 2.0
+        spot_correlation: -0.9
+      vol_regime:
+        rv_5: 35.0
+        rv_10: 28.0
+        rv_20: 20.0
+        vov_20: 8.0
+        vrp: -6.0
+        p_rv: 0.96
+        p_vov: 0.93
+        p_vrp: 0.03
+      chain:
+        expiry_dte: 3
+        atm_iv: 30.0
+        iv_skew_slope: -0.18
+        iv_skew_curvature: 0.05
+        iv_percentile: 95.0
+        bid_ask_spread_pct: 0.04
+        stress_spread_multiplier: 4.0
+
+covid_cascade:
+  name: covid_cascade
+  description: >
+    Five-day pandemic-style cascade. Each day features multiple phases
+    with extreme intraday swings. Massive VIX expansion, circuit breaker
+    territory. Tests algorithm behavior under once-in-a-decade stress.
+    Inspired by March 2020 NIFTY crash from 11,200 to 7,500.
+  category: multi-day
+
+  days:
+    - price_path:
+        open_price: 23500.0
+        phases:
+          - start_minute: 0
+            end_minute: 90
+            drift: -0.50
+            volatility: 0.40
+            jump_intensity: 5.0
+            jump_mean: -0.025
+            jump_std: 0.03
+          - start_minute: 90
+            end_minute: 240
+            drift: 0.10
+            volatility: 0.30
+          - start_minute: 240
+            end_minute: 375
+            drift: -0.30
+            volatility: 0.35
+        volume_base: 16000000.0
+      vix:
+        open_level: 22.0
+        mean_level: 30.0
+        volatility: 0.7
+        kappa: 1.5
+        spot_correlation: -0.9
+        spikes:
+          30: 35.0
+      vol_regime:
+        rv_5: 40.0
+        rv_10: 30.0
+        rv_20: 22.0
+        vov_20: 10.0
+        vrp: -8.0
+        p_rv: 0.98
+        p_vov: 0.95
+        p_vrp: 0.02
+      chain:
+        expiry_dte: 5
+        atm_iv: 35.0
+        iv_skew_slope: -0.20
+        iv_skew_curvature: 0.06
+        iv_percentile: 97.0
+        bid_ask_spread_pct: 0.05
+        stress_spread_multiplier: 5.0
+
+    - price_path:
+        open_price: 22700.0
+        phases:
+          - start_minute: 0
+            end_minute: 60
+            drift: -0.60
+            volatility: 0.50
+            jump_intensity: 6.0
+            jump_mean: -0.03
+            jump_std: 0.035
+          - start_minute: 60
+            end_minute: 200
+            drift: -0.20
+            volatility: 0.35
+          - start_minute: 200
+            end_minute: 375
+            drift: 0.25
+            volatility: 0.40
+        volume_base: 18000000.0
+      gap:
+        gap_pct: -0.02
+        prev_close: 22700.0
+      vix:
+        open_level: 35.0
+        mean_level: 38.0
+        volatility: 0.8
+        kappa: 1.0
+        spot_correlation: -0.92
+        spikes:
+          15: 42.0
+      chain:
+        expiry_dte: 4
+        atm_iv: 42.0
+        iv_skew_slope: -0.22
+        iv_percentile: 99.0
+        bid_ask_spread_pct: 0.06
+        stress_spread_multiplier: 6.0
+
+    - price_path:
+        open_price: 22100.0
+        phases:
+          - start_minute: 0
+            end_minute: 45
+            drift: -0.80
+            volatility: 0.55
+            jump_intensity: 8.0
+            jump_mean: -0.035
+            jump_std: 0.04
+          - start_minute: 45
+            end_minute: 180
+            drift: 0.30
+            volatility: 0.45
+          - start_minute: 180
+            end_minute: 375
+            drift: -0.40
+            volatility: 0.50
+        volume_base: 20000000.0
+      gap:
+        gap_pct: -0.025
+        prev_close: 22100.0
+      vix:
+        open_level: 42.0
+        mean_level: 45.0
+        volatility: 0.9
+        kappa: 1.0
+        spot_correlation: -0.93
+        spikes:
+          10: 50.0
+      chain:
+        expiry_dte: 3
+        atm_iv: 50.0
+        iv_skew_slope: -0.25
+        iv_percentile: 99.5
+        bid_ask_spread_pct: 0.08
+        stress_spread_multiplier: 8.0
+
+    - price_path:
+        open_price: 21300.0
+        phases:
+          - start_minute: 0
+            end_minute: 120
+            drift: 0.40
+            volatility: 0.45
+          - start_minute: 120
+            end_minute: 250
+            drift: -0.50
+            volatility: 0.50
+            jump_intensity: 4.0
+            jump_mean: -0.02
+            jump_std: 0.03
+          - start_minute: 250
+            end_minute: 375
+            drift: -0.20
+            volatility: 0.40
+        volume_base: 17000000.0
+      gap:
+        gap_pct: -0.03
+        prev_close: 21300.0
+      vix:
+        open_level: 48.0
+        mean_level: 45.0
+        volatility: 0.85
+        kappa: 1.2
+        spot_correlation: -0.91
+      chain:
+        expiry_dte: 2
+        atm_iv: 48.0
+        iv_skew_slope: -0.24
+        iv_percentile: 99.0
+        bid_ask_spread_pct: 0.07
+        stress_spread_multiplier: 7.0
+
+    - price_path:
+        open_price: 20800.0
+        phases:
+          - start_minute: 0
+            end_minute: 90
+            drift: -0.30
+            volatility: 0.40
+          - start_minute: 90
+            end_minute: 375
+            drift: 0.50
+            volatility: 0.45
+        volume_base: 16000000.0
+      gap:
+        gap_pct: -0.015
+        prev_close: 20800.0
+      vix:
+        open_level: 44.0
+        mean_level: 38.0
+        volatility: 0.75
+        kappa: 2.0
+        spot_correlation: -0.88
+      chain:
+        expiry_dte: 1
+        atm_iv: 45.0
+        iv_skew_slope: -0.22
+        iv_percentile: 98.0
+        bid_ask_spread_pct: 0.06
+        stress_spread_multiplier: 5.0
+
+global_contagion:
+  name: global_contagion
+  description: >
+    Gap down driven by Asian market sell-off. Morning panic with heavy
+    selling for the first 90 minutes, then partial recovery as domestic
+    buyers step in. Does not fully recover — ends down ~1.5%.
+  category: contagion
+
+  price_path:
+    open_price: 22770.0
+    phases:
+      - start_minute: 0
+        end_minute: 90
+        drift: -0.35
+        volatility: 0.30
+        jump_intensity: 2.0
+        jump_mean: -0.015
+        jump_std: 0.02
+      - start_minute: 90
+        end_minute: 240
+        drift: 0.12
+        volatility: 0.20
+        mean_reversion_kappa: 2.0
+        mean_reversion_level: 22700.0
+      - start_minute: 240
+        end_minute: 375
+        drift: -0.05
+        volatility: 0.18
+    volume_base: 10000000.0
+
+  gap:
+    gap_pct: -0.01
+    prev_close: 23000.0
+    gap_fill_probability: 0.2
+    gap_fill_speed: 120
+
+  vix:
+    open_level: 20.0
+    mean_level: 18.0
+    volatility: 0.4
+    kappa: 3.0
+    spot_correlation: -0.8
+    spikes:
+      0: 22.0
+      45: 21.0
+
+  vol_regime:
+    rv_5: 24.0
+    rv_10: 18.0
+    rv_20: 15.0
+    vov_20: 5.0
+    vrp: -2.0
+    p_rv: 0.85
+    p_vov: 0.78
+    p_vrp: 0.12
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 22.0
+    iv_skew_slope: -0.14
+    iv_percentile: 80.0
+    bid_ask_spread_pct: 0.025
+    stress_spread_multiplier: 2.5
+
+rbi_surprise:
+  name: rbi_surprise
+  description: >
+    Normal morning followed by surprise RBI policy announcement at 12:15 PM
+    (minute 180). Unexpected rate cut causes sudden +1.5% spike. VIX drops
+    after initial uncertainty. Tests reaction to scheduled-but-surprising
+    macro events.
+  category: policy
+
+  price_path:
+    open_price: 23000.0
+    phases:
+      - start_minute: 0
+        end_minute: 180
+        drift: 0.02
+        volatility: 0.10
+        mean_reversion_kappa: 3.0
+        mean_reversion_level: 23000.0
+      - start_minute: 180
+        end_minute: 195
+        drift: 1.20
+        volatility: 0.40
+        jump_intensity: 5.0
+        jump_mean: 0.02
+        jump_std: 0.015
+      - start_minute: 195
+        end_minute: 375
+        drift: 0.08
+        volatility: 0.18
+    volume_base: 12000000.0
+
+  vix:
+    open_level: 14.0
+    mean_level: 13.0
+    volatility: 0.35
+    kappa: 4.0
+    spot_correlation: -0.7
+    spikes:
+      180: 19.0
+      195: 16.0
+
+  vol_regime:
+    rv_5: 14.0
+    rv_10: 13.0
+    rv_20: 13.0
+    vov_20: 4.0
+    vrp: 1.0
+    p_rv: 0.55
+    p_vov: 0.60
+    p_vrp: 0.40
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 16.0
+    iv_skew_slope: -0.10
+    iv_percentile: 55.0
+    bid_ask_spread_pct: 0.02
+    stress_spread_multiplier: 2.0

@@ -1,0 +1,203 @@
+# Normal market condition scenarios — typical trading days
+# Categories: trend, range, low-activity
+
+trending_up:
+  name: trending_up
+  description: >
+    Steady bullish trend with low volatility and suppressed VIX.
+    Typical institutional accumulation day with consistent buying pressure.
+  category: trend
+
+  price_path:
+    open_price: 23500.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: 0.15
+        volatility: 0.12
+    volume_base: 6000000.0
+
+  vix:
+    open_level: 11.5
+    mean_level: 11.0
+    volatility: 0.2
+    kappa: 5.0
+    spot_correlation: -0.6
+
+  vol_regime:
+    rv_5: 10.0
+    rv_10: 11.0
+    rv_20: 12.0
+    vov_20: 2.0
+    vrp: 1.5
+    p_rv: 0.30
+    p_vov: 0.30
+    p_vrp: 0.35
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 12.0
+    iv_skew_slope: -0.06
+    iv_percentile: 25.0
+
+trending_down:
+  name: trending_down
+  description: >
+    Moderate bearish trend with slightly elevated volatility.
+    Selling pressure throughout the day with VIX drifting higher.
+  category: trend
+
+  price_path:
+    open_price: 23200.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: -0.15
+        volatility: 0.14
+    volume_base: 7000000.0
+
+  vix:
+    open_level: 15.0
+    mean_level: 15.5
+    volatility: 0.3
+    kappa: 3.0
+    spot_correlation: -0.75
+
+  vol_regime:
+    rv_5: 14.0
+    rv_10: 13.5
+    rv_20: 13.0
+    vov_20: 3.5
+    vrp: 2.0
+    p_rv: 0.60
+    p_vov: 0.55
+    p_vrp: 0.50
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 15.5
+    iv_skew_slope: -0.10
+    iv_percentile: 55.0
+
+range_bound:
+  name: range_bound
+  description: >
+    Mean-reverting sideways market with strong support/resistance.
+    Price oscillates within a tight range — ideal for premium selling.
+  category: range
+
+  price_path:
+    open_price: 23800.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        volatility: 0.10
+        mean_reversion_kappa: 10.0
+        mean_reversion_level: 23800.0
+    volume_base: 5000000.0
+
+  vix:
+    open_level: 12.0
+    mean_level: 11.5
+    volatility: 0.2
+    kappa: 6.0
+    spot_correlation: -0.5
+
+  vol_regime:
+    rv_5: 9.0
+    rv_10: 10.0
+    rv_20: 11.0
+    vov_20: 2.0
+    vrp: 2.5
+    p_rv: 0.25
+    p_vov: 0.25
+    p_vrp: 0.60
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 11.0
+    iv_skew_slope: -0.05
+    iv_percentile: 20.0
+
+slow_grind_up:
+  name: slow_grind_up
+  description: >
+    Very calm, low-volatility bullish session. Minimal intraday swings.
+    The kind of day where theta sellers thrive and directional trades
+    barely move. Volume is below average.
+  category: trend
+
+  price_path:
+    open_price: 23650.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: 0.05
+        volatility: 0.08
+    volume_base: 3500000.0
+
+  vix:
+    open_level: 10.5
+    mean_level: 10.0
+    volatility: 0.15
+    kappa: 7.0
+    spot_correlation: -0.4
+
+  vol_regime:
+    rv_5: 7.0
+    rv_10: 8.0
+    rv_20: 9.0
+    vov_20: 1.5
+    vrp: 1.0
+    p_rv: 0.15
+    p_vov: 0.15
+    p_vrp: 0.20
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 10.0
+    iv_skew_slope: -0.04
+    iv_percentile: 12.0
+
+low_volume_sideways:
+  name: low_volume_sideways
+  description: >
+    Ultra-low volume, ultra-low volatility sideways day. Often seen
+    before holidays or major events when participants sit on the sidelines.
+    Mean-reverting with very tight range.
+  category: range
+
+  price_path:
+    open_price: 23400.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        volatility: 0.06
+        mean_reversion_kappa: 8.0
+        mean_reversion_level: 23400.0
+    volume_base: 2000000.0
+    volume_u_shape_strength: 1.5
+
+  vix:
+    open_level: 11.0
+    mean_level: 10.5
+    volatility: 0.15
+    kappa: 6.0
+    spot_correlation: -0.4
+
+  vol_regime:
+    rv_5: 6.0
+    rv_10: 7.0
+    rv_20: 8.0
+    vov_20: 1.2
+    vrp: 1.0
+    p_rv: 0.10
+    p_vov: 0.10
+    p_vrp: 0.15
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 9.0
+    iv_skew_slope: -0.04
+    iv_percentile: 10.0
+    bid_ask_spread_pct: 0.015

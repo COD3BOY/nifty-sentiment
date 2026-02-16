@@ -1,0 +1,275 @@
+# Intraday pattern scenarios — common technical formations
+# Categories: chop, reversal, bleed, breakout
+
+whipsaw_chop:
+  name: whipsaw_chop
+  description: >
+    Multiple rapid reversals throughout the day. Alternating up/down phases
+    with elevated volatility create a choppy, directionless session.
+    Stop-losses are frequently triggered. Tests algorithm resilience
+    against whipsaw and false signals.
+  category: chop
+
+  price_path:
+    open_price: 23500.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: 0.20
+        volatility: 0.20
+      - start_minute: 60
+        end_minute: 120
+        drift: -0.25
+        volatility: 0.22
+      - start_minute: 120
+        end_minute: 180
+        drift: 0.18
+        volatility: 0.20
+      - start_minute: 180
+        end_minute: 240
+        drift: -0.22
+        volatility: 0.22
+      - start_minute: 240
+        end_minute: 300
+        drift: 0.15
+        volatility: 0.18
+      - start_minute: 300
+        end_minute: 375
+        drift: -0.10
+        volatility: 0.20
+    volume_base: 7000000.0
+
+  vix:
+    open_level: 16.0
+    mean_level: 16.5
+    volatility: 0.35
+    kappa: 3.0
+    spot_correlation: -0.6
+
+  vol_regime:
+    rv_5: 18.0
+    rv_10: 16.0
+    rv_20: 14.0
+    vov_20: 5.0
+    vrp: -1.0
+    p_rv: 0.72
+    p_vov: 0.70
+    p_vrp: 0.25
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 17.0
+    iv_skew_slope: -0.10
+    iv_percentile: 60.0
+
+v_recovery:
+  name: v_recovery
+  description: >
+    Sharp -2% sell-off in the first half, followed by full V-shaped
+    recovery. Morning panic creates attractive entry points. The recovery
+    is strong and sustained, ending the day near flat or slightly positive.
+    Tests ability to avoid panic exits and recognize reversals.
+  category: reversal
+
+  price_path:
+    open_price: 23800.0
+    phases:
+      - start_minute: 0
+        end_minute: 45
+        drift: -0.50
+        volatility: 0.30
+        jump_intensity: 2.0
+        jump_mean: -0.015
+        jump_std: 0.02
+      - start_minute: 45
+        end_minute: 180
+        drift: -0.15
+        volatility: 0.22
+      - start_minute: 180
+        end_minute: 210
+        drift: 0.50
+        volatility: 0.25
+      - start_minute: 210
+        end_minute: 375
+        drift: 0.30
+        volatility: 0.18
+    volume_base: 11000000.0
+
+  vix:
+    open_level: 14.0
+    mean_level: 16.0
+    volatility: 0.45
+    kappa: 3.0
+    spot_correlation: -0.8
+    spikes:
+      45: 20.0
+      90: 19.0
+      180: 16.0
+
+  vol_regime:
+    rv_5: 22.0
+    rv_10: 17.0
+    rv_20: 14.0
+    vov_20: 5.0
+    vrp: -2.0
+    p_rv: 0.82
+    p_vov: 0.75
+    p_vrp: 0.15
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 19.0
+    iv_skew_slope: -0.12
+    iv_percentile: 68.0
+    bid_ask_spread_pct: 0.02
+
+slow_bleed:
+  name: slow_bleed
+  description: >
+    Tiny negative drift all day with very low volatility. The market
+    slowly leaks lower without any sharp moves. Death by a thousand cuts.
+    Difficult for directional traders; premium sellers may collect theta
+    if they avoid being on the wrong side.
+  category: bleed
+
+  price_path:
+    open_price: 23200.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: -0.06
+        volatility: 0.07
+    volume_base: 3500000.0
+
+  vix:
+    open_level: 12.5
+    mean_level: 13.0
+    volatility: 0.2
+    kappa: 5.0
+    spot_correlation: -0.5
+
+  vol_regime:
+    rv_5: 7.0
+    rv_10: 8.0
+    rv_20: 9.0
+    vov_20: 1.5
+    vrp: 2.0
+    p_rv: 0.15
+    p_vov: 0.15
+    p_vrp: 0.55
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 11.0
+    iv_skew_slope: -0.06
+    iv_percentile: 22.0
+
+breakout_continuation:
+  name: breakout_continuation
+  description: >
+    Range-bound first 2 hours (120 min) as market builds a base.
+    Breakout occurs after 10:00 AM with strong upward momentum and
+    expanding volume. Continuation into close. Tests ability to
+    recognize and ride a genuine breakout.
+  category: breakout
+
+  price_path:
+    open_price: 23600.0
+    phases:
+      - start_minute: 0
+        end_minute: 120
+        volatility: 0.09
+        mean_reversion_kappa: 10.0
+        mean_reversion_level: 23600.0
+      - start_minute: 120
+        end_minute: 150
+        drift: 0.40
+        volatility: 0.18
+      - start_minute: 150
+        end_minute: 375
+        drift: 0.15
+        volatility: 0.13
+    volume_base: 6000000.0
+    volume_u_shape_strength: 1.5
+
+  vix:
+    open_level: 12.0
+    mean_level: 11.5
+    volatility: 0.2
+    kappa: 5.0
+    spot_correlation: -0.55
+
+  vol_regime:
+    rv_5: 10.0
+    rv_10: 10.0
+    rv_20: 11.0
+    vov_20: 2.5
+    vrp: 1.5
+    p_rv: 0.35
+    p_vov: 0.30
+    p_vrp: 0.45
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 12.5
+    iv_skew_slope: -0.07
+    iv_percentile: 30.0
+
+false_breakout:
+  name: false_breakout
+  description: >
+    Range-bound morning, apparent breakout at minute 120, then sharp
+    reversal at minute 180. The breakout traps momentum buyers before
+    reversing hard. Ends below the opening range. Tests stop-loss
+    discipline and false signal detection.
+  category: breakout
+
+  price_path:
+    open_price: 23500.0
+    phases:
+      - start_minute: 0
+        end_minute: 120
+        volatility: 0.10
+        mean_reversion_kappa: 8.0
+        mean_reversion_level: 23500.0
+      - start_minute: 120
+        end_minute: 180
+        drift: 0.30
+        volatility: 0.16
+      - start_minute: 180
+        end_minute: 210
+        drift: -0.60
+        volatility: 0.25
+        jump_intensity: 2.0
+        jump_mean: -0.01
+        jump_std: 0.015
+      - start_minute: 210
+        end_minute: 375
+        drift: -0.08
+        volatility: 0.14
+    volume_base: 7500000.0
+
+  vix:
+    open_level: 13.0
+    mean_level: 14.0
+    volatility: 0.3
+    kappa: 4.0
+    spot_correlation: -0.65
+    spikes:
+      180: 17.0
+
+  vol_regime:
+    rv_5: 14.0
+    rv_10: 13.0
+    rv_20: 12.0
+    vov_20: 3.5
+    vrp: 0.0
+    p_rv: 0.55
+    p_vov: 0.50
+    p_vrp: 0.40
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 14.0
+    iv_skew_slope: -0.09
+    iv_percentile: 42.0

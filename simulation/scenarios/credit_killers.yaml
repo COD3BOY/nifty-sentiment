@@ -1,0 +1,396 @@
+# Credit-killer scenarios — designed to stress-test credit strategies
+# Categories: vega, gap, gamma, multi-day, expiry, combo
+
+iv_expansion_no_move:
+  name: iv_expansion_no_move
+  description: >
+    Spot barely moves (-0.3% drift) but VIX spikes from 13 to 26 over the
+    day (pre-event anxiety). IV doubles, credit positions lose on vega
+    expansion alone. Tests whether algos exit when IV expansion erodes
+    position even without directional move.
+  category: vega
+  tags: [credit_killer, vega]
+
+  price_path:
+    open_price: 23500.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: -0.03
+        volatility: 0.08
+        mean_reversion_kappa: 5.0
+        mean_reversion_level: 23500.0
+    volume_base: 6000000.0
+
+  vix:
+    open_level: 13.0
+    mean_level: 24.0
+    volatility: 0.6
+    kappa: 1.5
+    spot_correlation: -0.5
+    spikes:
+      60: 18.0
+      120: 22.0
+      180: 25.0
+      240: 26.0
+
+  vol_regime:
+    rv_5: 10.0
+    rv_10: 11.0
+    rv_20: 12.0
+    vov_20: 3.0
+    vrp: 2.0
+    p_rv: 0.35
+    p_vov: 0.40
+    p_vrp: 0.55
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 13.0
+    iv_skew_slope: -0.08
+    iv_skew_curvature: 0.02
+    iv_percentile: 30.0
+    iv_reactivity: 0.8
+
+persistent_gap_down_no_fill:
+  name: persistent_gap_down_no_fill
+  description: >
+    2.5% gap down that trends further down instead of filling. VIX opens
+    at 22 and stays elevated. Tests credit positions that entered assuming
+    normal conditions — gap pushes short puts toward ITM.
+  category: gap
+  tags: [credit_killer, gap]
+
+  price_path:
+    open_price: 22925.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: -0.25
+        volatility: 0.25
+        jump_intensity: 2.0
+        jump_mean: -0.015
+        jump_std: 0.02
+      - start_minute: 60
+        end_minute: 240
+        drift: -0.12
+        volatility: 0.20
+      - start_minute: 240
+        end_minute: 375
+        drift: -0.08
+        volatility: 0.18
+    volume_base: 12000000.0
+
+  gap:
+    gap_pct: -0.025
+    prev_close: 23500.0
+    gap_fill_probability: 0.05
+    gap_fill_speed: 375
+
+  vix:
+    open_level: 22.0
+    mean_level: 23.0
+    volatility: 0.4
+    kappa: 2.0
+    spot_correlation: -0.85
+
+  vol_regime:
+    rv_5: 25.0
+    rv_10: 20.0
+    rv_20: 16.0
+    vov_20: 6.0
+    vrp: -3.0
+    p_rv: 0.85
+    p_vov: 0.80
+    p_vrp: 0.10
+
+  chain:
+    expiry_dte: 4
+    atm_iv: 22.0
+    iv_skew_slope: -0.15
+    iv_skew_curvature: 0.04
+    iv_percentile: 82.0
+    bid_ask_spread_pct: 0.025
+    stress_spread_multiplier: 2.5
+    iv_reactivity: 0.6
+
+gamma_bleed_oscillation:
+  name: gamma_bleed_oscillation
+  description: >
+    Spot oscillates in a 200pt range near short strikes with high-frequency
+    mean-reversion. Each oscillation costs gamma on existing positions.
+    Time decay doesn't compensate because ATM gamma is high. Tests
+    positions near ATM where gamma exposure is maximal.
+  category: gamma
+  tags: [credit_killer, gamma]
+
+  price_path:
+    open_price: 23300.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: 0.0
+        volatility: 0.12
+        mean_reversion_kappa: 8.0
+        mean_reversion_level: 23300.0
+      - start_minute: 60
+        end_minute: 180
+        drift: 0.0
+        volatility: 0.20
+        mean_reversion_kappa: 6.0
+        mean_reversion_level: 23300.0
+      - start_minute: 180
+        end_minute: 300
+        drift: 0.0
+        volatility: 0.22
+        mean_reversion_kappa: 5.0
+        mean_reversion_level: 23350.0
+      - start_minute: 300
+        end_minute: 375
+        drift: 0.0
+        volatility: 0.18
+        mean_reversion_kappa: 7.0
+        mean_reversion_level: 23300.0
+    volume_base: 7000000.0
+
+  vix:
+    open_level: 15.0
+    mean_level: 16.0
+    volatility: 0.3
+    kappa: 4.0
+    spot_correlation: -0.6
+
+  vol_regime:
+    rv_5: 18.0
+    rv_10: 15.0
+    rv_20: 14.0
+    vov_20: 5.0
+    vrp: -1.0
+    p_rv: 0.70
+    p_vov: 0.65
+    p_vrp: 0.25
+
+  chain:
+    expiry_dte: 2
+    atm_iv: 16.0
+    iv_skew_slope: -0.10
+    iv_skew_curvature: 0.025
+    iv_percentile: 55.0
+    strike_step: 50.0
+    iv_reactivity: 0.4
+
+overnight_gap_through:
+  name: overnight_gap_through
+  description: >
+    Multi-day scenario. Day 1: calm, credit enters. Day 2: opens with -3%
+    gap below short put strike. Short put is now deep ITM. IV stays elevated
+    all Day 2. Tests overnight gap risk on credit positions.
+  category: multi-day
+  tags: [credit_killer, gap, multi_day]
+
+  days:
+    - price_path:
+        open_price: 23500.0
+        phases:
+          - start_minute: 0
+            end_minute: 375
+            drift: 0.02
+            volatility: 0.10
+            mean_reversion_kappa: 4.0
+            mean_reversion_level: 23500.0
+        volume_base: 5000000.0
+      vix:
+        open_level: 12.0
+        mean_level: 12.0
+        volatility: 0.25
+        kappa: 5.0
+        spot_correlation: -0.6
+      vol_regime:
+        rv_5: 10.0
+        rv_10: 11.0
+        rv_20: 12.0
+        vov_20: 2.5
+        vrp: 2.0
+        p_rv: 0.30
+        p_vov: 0.35
+        p_vrp: 0.60
+      chain:
+        expiry_dte: 5
+        atm_iv: 12.0
+        iv_skew_slope: -0.08
+        iv_percentile: 25.0
+        iv_reactivity: 0.3
+
+    - price_path:
+        open_price: 22795.0
+        phases:
+          - start_minute: 0
+            end_minute: 90
+            drift: -0.30
+            volatility: 0.35
+            jump_intensity: 3.0
+            jump_mean: -0.02
+            jump_std: 0.025
+          - start_minute: 90
+            end_minute: 375
+            drift: -0.10
+            volatility: 0.25
+        volume_base: 14000000.0
+      gap:
+        gap_pct: -0.03
+        prev_close: 23500.0
+        gap_fill_probability: 0.05
+        gap_fill_speed: 375
+      vix:
+        open_level: 24.0
+        mean_level: 25.0
+        volatility: 0.5
+        kappa: 2.0
+        spot_correlation: -0.9
+      vol_regime:
+        rv_5: 30.0
+        rv_10: 22.0
+        rv_20: 16.0
+        vov_20: 7.0
+        vrp: -5.0
+        p_rv: 0.92
+        p_vov: 0.88
+        p_vrp: 0.05
+      chain:
+        expiry_dte: 4
+        atm_iv: 26.0
+        iv_skew_slope: -0.18
+        iv_skew_curvature: 0.05
+        iv_percentile: 90.0
+        bid_ask_spread_pct: 0.04
+        stress_spread_multiplier: 3.0
+        iv_reactivity: 0.7
+
+expiry_day_crush:
+  name: expiry_day_crush
+  description: >
+    Expiry day (DTE=0) with sharp 1.5% move in last 2 hours. Gamma
+    explosion + zero time value = maximum pain for short options.
+    Tests credit positions on expiry where gamma is extreme.
+  category: expiry
+  tags: [credit_killer, expiry, gamma]
+
+  price_path:
+    open_price: 23400.0
+    phases:
+      - start_minute: 0
+        end_minute: 240
+        drift: 0.01
+        volatility: 0.08
+        mean_reversion_kappa: 6.0
+        mean_reversion_level: 23400.0
+      - start_minute: 240
+        end_minute: 300
+        drift: -0.80
+        volatility: 0.40
+        jump_intensity: 5.0
+        jump_mean: -0.02
+        jump_std: 0.015
+      - start_minute: 300
+        end_minute: 375
+        drift: -0.20
+        volatility: 0.30
+    volume_base: 18000000.0
+    volume_u_shape_strength: 3.0
+
+  vix:
+    open_level: 14.0
+    mean_level: 14.0
+    volatility: 0.35
+    kappa: 4.0
+    spot_correlation: -0.8
+    spikes:
+      240: 20.0
+      270: 22.0
+
+  vol_regime:
+    rv_5: 14.0
+    rv_10: 13.0
+    rv_20: 13.0
+    vov_20: 3.5
+    vrp: 1.0
+    p_rv: 0.50
+    p_vov: 0.50
+    p_vrp: 0.45
+
+  chain:
+    expiry_dte: 0
+    atm_iv: 18.0
+    iv_skew_slope: -0.12
+    iv_skew_curvature: 0.03
+    iv_percentile: 60.0
+    bid_ask_spread_pct: 0.02
+    iv_reactivity: 0.7
+
+credit_crush_combo:
+  name: credit_crush_combo
+  description: >
+    The "everything goes wrong" scenario. Combines adversarial IV_EXPANSION
+    mode with a trending-down price path, elevated VIX, and wide bid-ask
+    spreads. IV expands reflexively when positions are losing, and spreads
+    blow out when the algo needs to exit.
+  category: combo
+  tags: [credit_killer, adversarial, combo]
+
+  price_path:
+    open_price: 23600.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: 0.02
+        volatility: 0.10
+      - start_minute: 60
+        end_minute: 180
+        drift: -0.40
+        volatility: 0.30
+        jump_intensity: 3.0
+        jump_mean: -0.015
+        jump_std: 0.02
+      - start_minute: 180
+        end_minute: 300
+        drift: -0.15
+        volatility: 0.22
+      - start_minute: 300
+        end_minute: 375
+        drift: -0.08
+        volatility: 0.18
+    volume_base: 10000000.0
+
+  vix:
+    open_level: 14.0
+    mean_level: 22.0
+    volatility: 0.55
+    kappa: 1.5
+    spot_correlation: -0.9
+    spikes:
+      60: 18.0
+      120: 22.0
+      180: 24.0
+
+  vol_regime:
+    rv_5: 14.0
+    rv_10: 13.0
+    rv_20: 13.0
+    vov_20: 3.5
+    vrp: 1.5
+    p_rv: 0.50
+    p_vov: 0.48
+    p_vrp: 0.52
+
+  chain:
+    expiry_dte: 4
+    atm_iv: 14.0
+    iv_skew_slope: -0.10
+    iv_skew_curvature: 0.025
+    iv_percentile: 42.0
+    bid_ask_spread_pct: 0.015
+    iv_reactivity: 0.8
+
+  adversarial:
+    mode: iv_expansion
+    intensity: 0.9

@@ -732,10 +732,17 @@ class ContextEngine:
         session = self._session_ctx
 
         # Daily context from SQLite
+        # Note: convert to dicts and re-validate to avoid Streamlit module
+        # reload class identity mismatches (DailyContext from a previous
+        # module load is a different class object than the current one).
         prior_days = []
         prior_day = None
         if self._cfg.get("daily_context_enabled", True):
-            prior_days = db.get_recent_daily_contexts(n=5)
+            raw_days = db.get_recent_daily_contexts(n=5)
+            prior_days = [
+                DailyContext.model_validate(d.model_dump(mode="json"))
+                for d in raw_days
+            ]
             if prior_days:
                 prior_day = prior_days[0]
 
@@ -743,7 +750,11 @@ class ContextEngine:
         current_week = None
         prior_week = None
         if self._cfg.get("weekly_context_enabled", True):
-            recent_weeks = db.get_recent_weekly_contexts(n=2)
+            raw_weeks = db.get_recent_weekly_contexts(n=2)
+            recent_weeks = [
+                WeeklyContext.model_validate(w.model_dump(mode="json"))
+                for w in raw_weeks
+            ]
             if len(recent_weeks) >= 1:
                 current_week = recent_weeks[0]
             if len(recent_weeks) >= 2:

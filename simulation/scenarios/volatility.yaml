@@ -1,0 +1,207 @@
+# Volatility regime scenarios — VIX spikes, compression, expiry effects
+# Categories: vix-spike, vol-compression, expiry, post-event
+
+vix_spike:
+  name: vix_spike
+  description: >
+    VIX jumps from 13 to 23 in the first hour, driven by sudden
+    geopolitical uncertainty. Spot sells off moderately but the real
+    story is the volatility expansion. Tests premium selling strategies
+    under rapid IV expansion.
+  category: vix-spike
+
+  price_path:
+    open_price: 23400.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: -0.20
+        volatility: 0.25
+        jump_intensity: 3.0
+        jump_mean: -0.01
+        jump_std: 0.02
+      - start_minute: 60
+        end_minute: 375
+        drift: -0.05
+        volatility: 0.20
+    volume_base: 9000000.0
+
+  vix:
+    open_level: 13.0
+    mean_level: 20.0
+    volatility: 0.6
+    kappa: 2.0
+    spot_correlation: -0.85
+    spikes:
+      15: 18.0
+      30: 21.0
+      45: 23.0
+      60: 23.5
+
+  vol_regime:
+    rv_5: 22.0
+    rv_10: 16.0
+    rv_20: 14.0
+    vov_20: 7.0
+    vrp: -5.0
+    p_rv: 0.88
+    p_vov: 0.85
+    p_vrp: 0.05
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 24.0
+    iv_skew_slope: -0.14
+    iv_skew_curvature: 0.04
+    iv_percentile: 88.0
+    bid_ask_spread_pct: 0.03
+    stress_spread_multiplier: 3.0
+
+vol_compression:
+  name: vol_compression
+  description: >
+    VIX slowly compresses from 18 to 10 over the full session. Market
+    grinds slightly higher in a calm, orderly fashion. Realized vol
+    drops well below implied — classic vol premium harvesting day.
+  category: vol-compression
+
+  price_path:
+    open_price: 23600.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: 0.05
+        volatility: 0.09
+    volume_base: 4500000.0
+
+  vix:
+    open_level: 18.0
+    mean_level: 10.0
+    volatility: 0.2
+    kappa: 1.5
+    spot_correlation: -0.5
+
+  vol_regime:
+    rv_5: 8.0
+    rv_10: 10.0
+    rv_20: 13.0
+    vov_20: 2.0
+    vrp: 5.0
+    p_rv: 0.18
+    p_vov: 0.20
+    p_vrp: 0.85
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 16.0
+    iv_skew_slope: -0.07
+    iv_percentile: 65.0
+
+expiry_vol_crush:
+  name: expiry_vol_crush
+  description: >
+    Weekly expiry day (0 DTE). IV collapses rapidly as time decay
+    accelerates. Theta burn is extreme. ATM straddle loses value
+    fast in the absence of a directional move. Tests 0-DTE strategy
+    behavior and vol-crush awareness.
+  category: expiry
+
+  price_path:
+    open_price: 23750.0
+    phases:
+      - start_minute: 0
+        end_minute: 120
+        volatility: 0.13
+        mean_reversion_kappa: 5.0
+        mean_reversion_level: 23750.0
+      - start_minute: 120
+        end_minute: 300
+        volatility: 0.10
+        mean_reversion_kappa: 8.0
+        mean_reversion_level: 23750.0
+      - start_minute: 300
+        end_minute: 375
+        volatility: 0.08
+        mean_reversion_kappa: 12.0
+        mean_reversion_level: 23750.0
+    volume_base: 10000000.0
+
+  vix:
+    open_level: 14.0
+    mean_level: 12.0
+    volatility: 0.25
+    kappa: 6.0
+    spot_correlation: -0.6
+
+  vol_regime:
+    rv_5: 11.0
+    rv_10: 12.0
+    rv_20: 13.0
+    vov_20: 2.5
+    vrp: 3.0
+    p_rv: 0.35
+    p_vov: 0.30
+    p_vrp: 0.70
+
+  chain:
+    expiry_dte: 0
+    atm_iv: 18.0
+    iv_skew_slope: -0.12
+    iv_skew_curvature: 0.03
+    iv_percentile: 60.0
+    bid_ask_spread_pct: 0.02
+    strike_step: 50.0
+    num_strikes_each_side: 15
+
+post_event_relief:
+  name: post_event_relief
+  description: >
+    Market opens with elevated volatility after a major event (e.g., budget,
+    election result, Fed decision). As the event passes without disaster,
+    VIX drops from 22 to 13 over the session. Gradual calm returns with
+    declining volume. Tests vol selling into relief.
+  category: post-event
+
+  price_path:
+    open_price: 23100.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: 0.10
+        volatility: 0.22
+      - start_minute: 60
+        end_minute: 180
+        drift: 0.08
+        volatility: 0.15
+      - start_minute: 180
+        end_minute: 375
+        drift: 0.04
+        volatility: 0.10
+    volume_base: 8000000.0
+
+  vix:
+    open_level: 22.0
+    mean_level: 13.0
+    volatility: 0.3
+    kappa: 2.5
+    spot_correlation: -0.7
+    spikes:
+      0: 22.0
+
+  vol_regime:
+    rv_5: 20.0
+    rv_10: 18.0
+    rv_20: 16.0
+    vov_20: 5.0
+    vrp: -2.0
+    p_rv: 0.78
+    p_vov: 0.72
+    p_vrp: 0.15
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 20.0
+    iv_skew_slope: -0.12
+    iv_percentile: 75.0
+    bid_ask_spread_pct: 0.02
+    stress_spread_multiplier: 2.0

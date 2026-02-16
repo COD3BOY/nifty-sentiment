@@ -1,0 +1,182 @@
+# Adversarial scenarios — designed to exploit common algo weaknesses
+# Categories: stop-hunt, gamma, liquidity
+
+sl_hunter:
+  name: sl_hunter
+  description: >
+    High-volatility mean-reverting market that oscillates near popular
+    strike prices (round 100s). Designed to trigger stop-losses on both
+    sides before reverting. Mean-reversion centered at 23500 with large
+    oscillations. Tests stop-loss placement and re-entry logic.
+  category: stop-hunt
+
+  price_path:
+    open_price: 23500.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: 0.15
+        volatility: 0.22
+        mean_reversion_kappa: 6.0
+        mean_reversion_level: 23500.0
+      - start_minute: 60
+        end_minute: 120
+        drift: -0.20
+        volatility: 0.24
+        mean_reversion_kappa: 5.0
+        mean_reversion_level: 23500.0
+      - start_minute: 120
+        end_minute: 180
+        drift: 0.18
+        volatility: 0.22
+        mean_reversion_kappa: 6.0
+        mean_reversion_level: 23500.0
+      - start_minute: 180
+        end_minute: 240
+        drift: -0.15
+        volatility: 0.24
+        mean_reversion_kappa: 5.0
+        mean_reversion_level: 23500.0
+      - start_minute: 240
+        end_minute: 375
+        volatility: 0.18
+        mean_reversion_kappa: 8.0
+        mean_reversion_level: 23500.0
+    volume_base: 8000000.0
+
+  vix:
+    open_level: 16.0
+    mean_level: 17.0
+    volatility: 0.35
+    kappa: 3.0
+    spot_correlation: -0.65
+
+  vol_regime:
+    rv_5: 20.0
+    rv_10: 18.0
+    rv_20: 15.0
+    vov_20: 5.0
+    vrp: -2.0
+    p_rv: 0.78
+    p_vov: 0.72
+    p_vrp: 0.18
+
+  chain:
+    expiry_dte: 3
+    atm_iv: 18.0
+    iv_skew_slope: -0.10
+    iv_percentile: 62.0
+    strike_step: 50.0
+    num_strikes_each_side: 20
+
+delta_spike:
+  name: delta_spike
+  description: >
+    Sudden +2% directional move in just 10 minutes (minute 150-160),
+    preceded and followed by calm conditions. Simulates a large
+    institutional order or news-driven spike. Tests gamma exposure
+    management and how algorithms handle sudden delta changes in
+    existing positions.
+  category: gamma
+
+  price_path:
+    open_price: 23200.0
+    phases:
+      - start_minute: 0
+        end_minute: 150
+        drift: 0.02
+        volatility: 0.10
+        mean_reversion_kappa: 4.0
+        mean_reversion_level: 23200.0
+      - start_minute: 150
+        end_minute: 160
+        drift: 2.00
+        volatility: 0.50
+        jump_intensity: 10.0
+        jump_mean: 0.025
+        jump_std: 0.015
+      - start_minute: 160
+        end_minute: 375
+        drift: 0.01
+        volatility: 0.12
+        mean_reversion_kappa: 3.0
+        mean_reversion_level: 23664.0
+    volume_base: 6000000.0
+
+  vix:
+    open_level: 12.0
+    mean_level: 13.0
+    volatility: 0.3
+    kappa: 4.0
+    spot_correlation: -0.7
+    spikes:
+      150: 18.0
+      155: 19.0
+      160: 17.0
+
+  vol_regime:
+    rv_5: 16.0
+    rv_10: 13.0
+    rv_20: 12.0
+    vov_20: 4.0
+    vrp: -1.0
+    p_rv: 0.65
+    p_vov: 0.60
+    p_vrp: 0.30
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 15.0
+    iv_skew_slope: -0.09
+    iv_percentile: 48.0
+    bid_ask_spread_pct: 0.015
+
+liquidity_vacuum:
+  name: liquidity_vacuum
+  description: >
+    Extreme illiquidity with very wide bid-ask spreads (5x normal),
+    low volume, and elevated volatility. Simulates conditions during
+    a market dislocation or thin holiday session where execution
+    quality is severely degraded. Tests algorithms' spread awareness
+    and position sizing under adverse fill conditions.
+  category: liquidity
+
+  price_path:
+    open_price: 23300.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: -0.08
+        volatility: 0.20
+        jump_intensity: 1.5
+        jump_mean: -0.01
+        jump_std: 0.02
+    volume_base: 1500000.0
+    volume_u_shape_strength: 1.0
+
+  vix:
+    open_level: 19.0
+    mean_level: 20.0
+    volatility: 0.4
+    kappa: 3.0
+    spot_correlation: -0.75
+
+  vol_regime:
+    rv_5: 18.0
+    rv_10: 16.0
+    rv_20: 14.0
+    vov_20: 5.0
+    vrp: -1.5
+    p_rv: 0.72
+    p_vov: 0.68
+    p_vrp: 0.22
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 21.0
+    iv_skew_slope: -0.12
+    iv_skew_curvature: 0.03
+    iv_percentile: 72.0
+    oi_base: 200000.0
+    bid_ask_spread_pct: 0.05
+    stress_spread_multiplier: 5.0

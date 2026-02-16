@@ -1,0 +1,228 @@
+# Gap scenarios — opening gaps of various sizes and behaviors
+# Categories: gap-up, gap-down, gap-fill, gap-continuation
+
+small_gap_up:
+  name: small_gap_up
+  description: >
+    Small 0.5% gap up — typical for mildly positive global cues.
+    Market absorbs the gap and trades normally after the first 15 minutes.
+  category: gap-up
+
+  price_path:
+    open_price: 23115.0
+    phases:
+      - start_minute: 0
+        end_minute: 375
+        drift: 0.03
+        volatility: 0.11
+    volume_base: 5500000.0
+
+  gap:
+    gap_pct: 0.005
+    prev_close: 23000.0
+    gap_fill_probability: 0.5
+    gap_fill_speed: 60
+
+  vix:
+    open_level: 13.0
+    mean_level: 12.5
+    volatility: 0.25
+    kappa: 5.0
+    spot_correlation: -0.6
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 13.0
+    iv_percentile: 35.0
+
+large_gap_up:
+  name: large_gap_up
+  description: >
+    Strong 1.5% gap up — driven by major positive news (earnings, policy).
+    Initial euphoria with high opening volume, then consolidation.
+  category: gap-up
+
+  price_path:
+    open_price: 23345.0
+    phases:
+      - start_minute: 0
+        end_minute: 60
+        drift: 0.05
+        volatility: 0.16
+      - start_minute: 60
+        end_minute: 375
+        drift: 0.02
+        volatility: 0.11
+    volume_base: 8000000.0
+
+  gap:
+    gap_pct: 0.015
+    prev_close: 23000.0
+    gap_fill_probability: 0.3
+    gap_fill_speed: 90
+
+  vix:
+    open_level: 14.0
+    mean_level: 13.0
+    volatility: 0.3
+    kappa: 4.0
+    spot_correlation: -0.65
+
+  vol_regime:
+    rv_5: 13.0
+    rv_10: 12.0
+    rv_20: 12.0
+    p_rv: 0.55
+    p_vov: 0.45
+    p_vrp: 0.40
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 14.5
+    iv_skew_slope: -0.09
+    iv_percentile: 45.0
+
+extreme_gap_down:
+  name: extreme_gap_down
+  description: >
+    Extreme 3% gap down — overnight global shock or geopolitical event.
+    VIX spikes hard at open. Panic selling with high volume.
+    Wide bid-ask spreads on options in the first hour.
+  category: gap-down
+
+  price_path:
+    open_price: 22310.0
+    phases:
+      - start_minute: 0
+        end_minute: 45
+        drift: -0.25
+        volatility: 0.35
+      - start_minute: 45
+        end_minute: 375
+        drift: 0.05
+        volatility: 0.22
+    volume_base: 12000000.0
+
+  gap:
+    gap_pct: -0.03
+    prev_close: 23000.0
+    gap_fill_probability: 0.15
+    gap_fill_speed: 120
+
+  vix:
+    open_level: 22.0
+    mean_level: 20.0
+    volatility: 0.5
+    kappa: 3.0
+    spot_correlation: -0.85
+    spikes:
+      0: 24.0
+      15: 23.0
+
+  vol_regime:
+    rv_5: 28.0
+    rv_10: 22.0
+    rv_20: 18.0
+    vov_20: 6.0
+    vrp: -3.0
+    p_rv: 0.95
+    p_vov: 0.90
+    p_vrp: 0.10
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 25.0
+    iv_skew_slope: -0.15
+    iv_skew_curvature: 0.04
+    iv_percentile: 92.0
+    bid_ask_spread_pct: 0.03
+    stress_spread_multiplier: 3.0
+
+gap_and_fill:
+  name: gap_and_fill
+  description: >
+    1% gap up that fills within the first 45 minutes. Classic gap-fill
+    pattern where the opening move is fully retraced. Mean-reverting
+    behavior after fill completion.
+  category: gap-fill
+
+  price_path:
+    open_price: 23230.0
+    phases:
+      - start_minute: 0
+        end_minute: 45
+        drift: -0.10
+        volatility: 0.14
+        mean_reversion_kappa: 5.0
+        mean_reversion_level: 23000.0
+      - start_minute: 45
+        end_minute: 375
+        volatility: 0.10
+        mean_reversion_kappa: 8.0
+        mean_reversion_level: 23050.0
+    volume_base: 6500000.0
+
+  gap:
+    gap_pct: 0.01
+    prev_close: 23000.0
+    gap_fill_probability: 0.9
+    gap_fill_speed: 45
+
+  vix:
+    open_level: 13.5
+    mean_level: 13.0
+    volatility: 0.25
+    kappa: 5.0
+    spot_correlation: -0.6
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 13.5
+    iv_percentile: 38.0
+
+gap_and_run:
+  name: gap_and_run
+  description: >
+    1.5% gap up that never fills — strong momentum continuation.
+    Breakout behavior with increasing volume after the first 30 minutes.
+    VIX stays suppressed despite the move.
+  category: gap-continuation
+
+  price_path:
+    open_price: 23345.0
+    phases:
+      - start_minute: 0
+        end_minute: 30
+        drift: 0.08
+        volatility: 0.14
+      - start_minute: 30
+        end_minute: 375
+        drift: 0.12
+        volatility: 0.11
+    volume_base: 9000000.0
+
+  gap:
+    gap_pct: 0.015
+    prev_close: 23000.0
+    gap_fill_probability: 0.1
+
+  vix:
+    open_level: 13.0
+    mean_level: 12.0
+    volatility: 0.2
+    kappa: 5.0
+    spot_correlation: -0.5
+
+  vol_regime:
+    rv_5: 12.0
+    rv_10: 11.0
+    rv_20: 11.0
+    p_rv: 0.45
+    p_vov: 0.35
+    p_vrp: 0.45
+
+  chain:
+    expiry_dte: 5
+    atm_iv: 13.0
+    iv_skew_slope: -0.07
+    iv_percentile: 32.0
