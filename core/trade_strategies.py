@@ -1313,11 +1313,286 @@ _ALL_EVALUATORS = [
     _eval_long_pe,
 ]
 
+# ---------------------------------------------------------------------------
+# Credit/debit classification for context adjustments
+# ---------------------------------------------------------------------------
+
+_CREDIT_STRATEGIES = {
+    "Short Straddle", "Short Strangle", "Bull Put Spread",
+    "Bear Call Spread", "Iron Condor",
+}
+
+_NEUTRAL_CREDIT_STRATEGIES = {"Short Straddle", "Short Strangle", "Iron Condor"}
+
+_DIRECTIONAL_CREDIT_MAP = {
+    "Bull Put Spread": "Bullish",
+    "Bear Call Spread": "Bearish",
+}
+
+
+# ---------------------------------------------------------------------------
+# Context-aware post-processor
+# ---------------------------------------------------------------------------
+
+def _apply_context_adjustments(
+    suggestions: list[TradeSuggestion],
+    context: "MarketContext",
+    cfg: dict,
+    observation: "ObservationSnapshot | None" = None,
+) -> list[TradeSuggestion]:
+    """Apply multi-level context adjustments to suggestion scores.
+
+    Runs AFTER all 11 evaluators complete. Adjusts scores based on vol regime,
+    multi-day trend, prior day candle, session context, observation bias, weekly
+    trend, and vol regime stability. Appends [CTX]-prefixed reasons to each
+    suggestion's reasoning list.
+
+    Pure function: returns new list of suggestions with updated scores.
+    """
+    from core.context_models import MarketContext  # noqa: F811
+
+    adjusted: list[TradeSuggestion] = []
+    for s in suggestions:
+        strategy_name = s.strategy.value if hasattr(s.strategy, "value") else str(s.strategy)
+        is_credit = strategy_name in _CREDIT_STRATEGIES
+        is_neutral_credit = strategy_name in _NEUTRAL_CREDIT_STRATEGIES
+        is_directional_credit = strategy_name in _DIRECTIONAL_CREDIT_MAP
+        dir_credit_bias = _DIRECTIONAL_CREDIT_MAP.get(strategy_name)
+        original_score = s.score
+        delta = 0.0
+        ctx_reasons: list[str] = []
+        bias = s.direction_bias
+
+        # --- Vol regime ---
+        vol = context.vol
+        if is_credit:
+            if vol.regime == "sell_premium":
+                bonus = cfg.get("vol_sell_premium_bonus", 10)
+                delta += bonus
+                ctx_reasons.append(f"[CTX] Vol regime sell_premium: +{bonus}")
+            elif vol.regime == "stand_down":
+                penalty = cfg.get("vol_stand_down_penalty", -10)
+                delta += penalty
+                ctx_reasons.append(f"[CTX] Vol regime stand_down: {penalty}")
+            elif vol.regime == "buy_premium":
+                penalty = cfg.get("vol_buy_premium_penalty", -5)
+                delta += penalty
+                ctx_reasons.append(f"[CTX] Vol regime buy_premium: {penalty}")
+
+            # RV trend
+            if vol.rv_trend == "expanding":
+                penalty = cfg.get("rv_expanding_penalty", -5)
+                delta += penalty
+                ctx_reasons.append(f"[CTX] RV expanding: {penalty}")
+            elif vol.rv_trend == "contracting":
+                bonus = cfg.get("rv_contracting_bonus", 5)
+                delta += bonus
+                ctx_reasons.append(f"[CTX] RV contracting: +{bonus}")
+        else:
+            # Debit strategies
+            if vol.regime == "buy_premium":
+                bonus = cfg.get("vol_sell_premium_bonus", 10)  # reuse same magnitude
+                delta += bonus
+                ctx_reasons.append(f"[CTX] Vol regime buy_premium (debit): +{bonus}")
+            elif vol.regime == "sell_premium":
+                penalty = cfg.get("vol_stand_down_penalty", -10)  # symmetric penalty
+                delta += penalty
+                ctx_reasons.append(f"[CTX] Vol regime sell_premium (debit): {penalty}")
+
+            if vol.rv_trend == "expanding":
+                bonus = cfg.get("rv_contracting_bonus", 5)  # expanding helps debit
+                delta += bonus
+                ctx_reasons.append(f"[CTX] RV expanding (debit): +{bonus}")
+
+        # --- Multi-day trend alignment ---
+        trend = context.multi_day_trend
+        align_bonus = cfg.get("trend_alignment_bonus", 5)
+        conflict_penalty = cfg.get("trend_conflict_penalty", -5)
+
+        if is_neutral_credit:
+            # Neutral credit strategies benefit from neutral trend
+            if trend == "neutral":
+                delta += align_bonus
+                ctx_reasons.append(f"[CTX] Neutral trend suits neutral credit: +{align_bonus}")
+            elif trend in ("bullish", "bearish"):
+                delta += conflict_penalty
+                ctx_reasons.append(f"[CTX] Trending market hurts neutral credit: {conflict_penalty}")
+        elif is_credit:
+            # Directional credit: BPS is bullish, BCS is bearish
+            if (bias == "Bullish" and trend == "bullish") or (bias == "Bearish" and trend == "bearish"):
+                delta += align_bonus
+                ctx_reasons.append(f"[CTX] Trend {trend} aligns with {bias} credit: +{align_bonus}")
+            elif (bias == "Bullish" and trend == "bearish") or (bias == "Bearish" and trend == "bullish"):
+                delta += conflict_penalty
+                ctx_reasons.append(f"[CTX] Trend {trend} conflicts with {bias} credit: {conflict_penalty}")
+        else:
+            # Debit: trend alignment
+            if (bias == "Bullish" and trend == "bullish") or (bias == "Bearish" and trend == "bearish"):
+                delta += align_bonus
+                ctx_reasons.append(f"[CTX] Trend {trend} aligns with {bias} debit: +{align_bonus}")
+            elif (bias == "Bullish" and trend == "bearish") or (bias == "Bearish" and trend == "bullish"):
+                delta += conflict_penalty
+                ctx_reasons.append(f"[CTX] Trend {trend} conflicts with {bias} debit: {conflict_penalty}")
+
+        # --- Prior day context ---
+        if context.prior_day is not None:
+            # Doji bonus for neutral credit
+            if is_neutral_credit and context.prior_day.candle_type == "doji":
+                bonus = cfg.get("prior_day_doji_bonus", 5)
+                delta += bonus
+                ctx_reasons.append(f"[CTX] Prior day doji (indecision): +{bonus}")
+
+            # Wide prior day range penalty
+            wide_range_pct = cfg.get("prior_day_wide_range_pct", 2.0)
+            if context.prior_day.range_pct > wide_range_pct:
+                penalty = cfg.get("prior_day_wide_range_penalty", -5)
+                delta += penalty
+                ctx_reasons.append(
+                    f"[CTX] Prior day range {context.prior_day.range_pct:.1f}% > {wide_range_pct}%: {penalty}"
+                )
+
+        # --- Session context ---
+        session = context.session
+        if is_neutral_credit and session.session_trend == "range_bound":
+            bonus = cfg.get("session_range_bound_bonus", 5)
+            delta += bonus
+            ctx_reasons.append(f"[CTX] Session range-bound confirms neutral: +{bonus}")
+
+        session_wide_pct = cfg.get("session_wide_range_pct", 1.5)
+        if session.session_range_pct > session_wide_pct:
+            penalty = cfg.get("session_wide_range_penalty", -5)
+            delta += penalty
+            ctx_reasons.append(
+                f"[CTX] Session range {session.session_range_pct:.1f}% > {session_wide_pct}%: {penalty}"
+            )
+
+        # --- Session EMA alignment ---
+        ema_bonus = cfg.get("session_ema_alignment_bonus", 5)
+        ema_neutral_pen = cfg.get("session_ema_neutral_penalty", -3)
+        if session.ema_alignment == "bullish":
+            if is_directional_credit and dir_credit_bias == "Bullish":
+                delta += ema_bonus
+                ctx_reasons.append(f"[CTX] Session EMA bullish confirms BPS: +{ema_bonus}")
+            elif is_neutral_credit:
+                delta += ema_neutral_pen
+                ctx_reasons.append(f"[CTX] Session EMA bullish hurts neutral credit: {ema_neutral_pen}")
+        elif session.ema_alignment == "bearish":
+            if is_directional_credit and dir_credit_bias == "Bearish":
+                delta += ema_bonus
+                ctx_reasons.append(f"[CTX] Session EMA bearish confirms BCS: +{ema_bonus}")
+            elif is_neutral_credit:
+                delta += ema_neutral_pen
+                ctx_reasons.append(f"[CTX] Session EMA bearish hurts neutral credit: {ema_neutral_pen}")
+
+        # --- Session RSI trajectory ---
+        rsi_bonus = cfg.get("session_rsi_momentum_bonus", 3)
+        if session.rsi_trajectory == "rising" and is_directional_credit and dir_credit_bias == "Bullish":
+            delta += rsi_bonus
+            ctx_reasons.append(f"[CTX] Session RSI rising confirms BPS: +{rsi_bonus}")
+        elif session.rsi_trajectory == "falling" and is_directional_credit and dir_credit_bias == "Bearish":
+            delta += rsi_bonus
+            ctx_reasons.append(f"[CTX] Session RSI falling confirms BCS: +{rsi_bonus}")
+
+        # --- Session BB position reversal ---
+        bb_bonus = cfg.get("session_bb_reversal_bonus", 3)
+        if session.bb_position == "lower" and is_directional_credit and dir_credit_bias == "Bullish":
+            delta += bb_bonus
+            ctx_reasons.append(f"[CTX] Session BB lower — mean reversion helps BPS: +{bb_bonus}")
+        elif session.bb_position == "upper" and is_directional_credit and dir_credit_bias == "Bearish":
+            delta += bb_bonus
+            ctx_reasons.append(f"[CTX] Session BB upper — mean reversion helps BCS: +{bb_bonus}")
+
+        # --- Session VWAP confirmation ---
+        vwap_bonus = cfg.get("session_vwap_confirmation_bonus", 3)
+        vwap_thresh = cfg.get("session_vwap_threshold_pct", 0.3)
+        if is_directional_credit and dir_credit_bias == "Bullish" and session.current_vs_vwap_pct > vwap_thresh:
+            delta += vwap_bonus
+            ctx_reasons.append(f"[CTX] Above VWAP +{session.current_vs_vwap_pct:.1f}% confirms BPS: +{vwap_bonus}")
+        elif is_directional_credit and dir_credit_bias == "Bearish" and session.current_vs_vwap_pct < -vwap_thresh:
+            delta += vwap_bonus
+            ctx_reasons.append(f"[CTX] Below VWAP {session.current_vs_vwap_pct:.1f}% confirms BCS: +{vwap_bonus}")
+
+        # --- Observation bias ---
+        if observation is not None and hasattr(observation, "bias"):
+            obs_bias_bonus = cfg.get("observation_bias_bonus", 5)
+            obs_neutral_bonus = cfg.get("observation_neutral_bonus", 3)
+            obs_bias = observation.bias
+            if is_directional_credit:
+                if (dir_credit_bias == "Bullish" and obs_bias == "bullish") or \
+                   (dir_credit_bias == "Bearish" and obs_bias == "bearish"):
+                    delta += obs_bias_bonus
+                    ctx_reasons.append(f"[CTX] Observation bias {obs_bias} confirms {dir_credit_bias} credit: +{obs_bias_bonus}")
+            if is_neutral_credit and obs_bias == "neutral":
+                delta += obs_neutral_bonus
+                ctx_reasons.append(f"[CTX] Observation neutral confirms range: +{obs_neutral_bonus}")
+
+        # --- Weekly trend ---
+        if context.current_week is not None:
+            weekly_bonus = cfg.get("weekly_trend_bonus", 3)
+            wt = context.current_week.weekly_trend
+            if is_directional_credit:
+                if (dir_credit_bias == "Bullish" and wt == "bullish") or \
+                   (dir_credit_bias == "Bearish" and wt == "bearish"):
+                    delta += weekly_bonus
+                    ctx_reasons.append(f"[CTX] Weekly trend {wt} confirms {dir_credit_bias} credit: +{weekly_bonus}")
+            if is_neutral_credit and wt == "neutral":
+                delta += weekly_bonus
+                ctx_reasons.append(f"[CTX] Weekly neutral confirms range: +{weekly_bonus}")
+
+        # --- Vol regime stability/instability ---
+        stability_bonus = cfg.get("regime_stability_bonus", 3)
+        stability_min_days = cfg.get("regime_stability_min_days", 3)
+        instability_pen = cfg.get("regime_instability_penalty", -3)
+        instability_thresh = cfg.get("regime_instability_threshold", 4)
+        if is_credit and vol.regime == "sell_premium" and vol.regime_duration_days >= stability_min_days:
+            delta += stability_bonus
+            ctx_reasons.append(f"[CTX] Sell regime stable {vol.regime_duration_days}d: +{stability_bonus}")
+        if vol.regime_changes_30d >= instability_thresh:
+            delta += instability_pen
+            ctx_reasons.append(f"[CTX] Regime unstable ({vol.regime_changes_30d} changes/30d): {instability_pen}")
+
+        # --- Consecutive prior day pattern ---
+        consec_bonus = cfg.get("consecutive_day_bonus", 3)
+        consec_thresh = cfg.get("consecutive_day_threshold", 3)
+        if is_directional_credit and len(context.prior_days) >= consec_thresh:
+            recent = context.prior_days[:consec_thresh]
+            if all(d.close_vs_open == "up" for d in recent) and dir_credit_bias == "Bearish":
+                delta += consec_bonus
+                ctx_reasons.append(f"[CTX] {consec_thresh} consecutive up days — overextension helps BCS: +{consec_bonus}")
+            elif all(d.close_vs_open == "down" for d in recent) and dir_credit_bias == "Bullish":
+                delta += consec_bonus
+                ctx_reasons.append(f"[CTX] {consec_thresh} consecutive down days — overextension helps BPS: +{consec_bonus}")
+
+        # --- Apply adjustment ---
+        new_score = max(0.0, original_score + delta)
+        new_confidence = _confidence_from_score(new_score)
+        new_reasoning = list(s.reasoning) + ctx_reasons
+
+        if delta != 0:
+            logger.info(
+                "Context: %s %.1f->%.1f (%+.0f)",
+                strategy_name, original_score, new_score, delta,
+            )
+
+        adjusted.append(s.model_copy(update={
+            "score": new_score,
+            "confidence": new_confidence,
+            "reasoning": new_reasoning,
+        }))
+
+    return adjusted
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def generate_trade_suggestions(
     analytics: OptionsAnalytics,
     technicals: TechnicalIndicators,
     chain: OptionChainData,
+    context: "MarketContext | None" = None,
+    observation: "ObservationSnapshot | None" = None,
 ) -> list[TradeSuggestion]:
     """Evaluate all 11 strategies, return the best 4 with diversity."""
     min_score = _min_score()
@@ -1346,6 +1621,13 @@ def generate_trade_suggestions(
 
     # Sort by score descending
     suggestions.sort(key=lambda s: s.score, reverse=True)
+
+    # Apply context adjustments + re-sort (before dedup so scores affect selection)
+    if context is not None:
+        ctx_cfg = _trade_cfg().get("context_adjustments", {})
+        if ctx_cfg.get("enabled", True):
+            suggestions = _apply_context_adjustments(suggestions, context, ctx_cfg, observation=observation)
+            suggestions.sort(key=lambda s: s.score, reverse=True)
 
     # Deduplicate by direction_bias: max 2 per bias for variety
     bias_counts: Counter[str] = Counter()

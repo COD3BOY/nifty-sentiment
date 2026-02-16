@@ -43,6 +43,43 @@ class ObservationConfig(BaseModel):
         extra = "allow"
 
 
+class ContextAdjustmentsConfig(BaseModel):
+    """Validation for context-aware scoring adjustments."""
+    enabled: bool = True
+    vol_sell_premium_bonus: float = Field(ge=0, le=20, default=10)
+    vol_stand_down_penalty: float = Field(ge=-20, le=0, default=-10)
+    vol_buy_premium_penalty: float = Field(ge=-15, le=0, default=-5)
+    rv_expanding_penalty: float = Field(ge=-15, le=0, default=-5)
+    rv_contracting_bonus: float = Field(ge=0, le=15, default=5)
+    trend_alignment_bonus: float = Field(ge=0, le=15, default=5)
+    trend_conflict_penalty: float = Field(ge=-15, le=0, default=-5)
+    prior_day_doji_bonus: float = Field(ge=0, le=15, default=5)
+    prior_day_wide_range_penalty: float = Field(ge=-15, le=0, default=-5)
+    prior_day_wide_range_pct: float = Field(ge=0.5, le=5.0, default=2.0)
+    session_range_bound_bonus: float = Field(ge=0, le=15, default=5)
+    session_wide_range_penalty: float = Field(ge=-15, le=0, default=-5)
+    session_wide_range_pct: float = Field(ge=0.5, le=4.0, default=1.5)
+    # Enhanced context adjustments (Change 1)
+    session_ema_alignment_bonus: float = Field(ge=0, le=15, default=5)
+    session_ema_neutral_penalty: float = Field(ge=-10, le=0, default=-3)
+    session_rsi_momentum_bonus: float = Field(ge=0, le=10, default=3)
+    session_bb_reversal_bonus: float = Field(ge=0, le=10, default=3)
+    session_vwap_confirmation_bonus: float = Field(ge=0, le=10, default=3)
+    session_vwap_threshold_pct: float = Field(ge=0.1, le=1.0, default=0.3)
+    observation_bias_bonus: float = Field(ge=0, le=15, default=5)
+    observation_neutral_bonus: float = Field(ge=0, le=10, default=3)
+    weekly_trend_bonus: float = Field(ge=0, le=10, default=3)
+    regime_stability_bonus: float = Field(ge=0, le=10, default=3)
+    regime_stability_min_days: int = Field(ge=1, le=30, default=3)
+    regime_instability_penalty: float = Field(ge=-10, le=0, default=-3)
+    regime_instability_threshold: int = Field(ge=2, le=10, default=4)
+    consecutive_day_bonus: float = Field(ge=0, le=10, default=3)
+    consecutive_day_threshold: int = Field(ge=2, le=10, default=3)
+
+    class Config:
+        extra = "allow"
+
+
 class PaperTradingConfig(BaseModel):
     initial_capital: float = Field(gt=0)
     lot_size: int = Field(gt=0)
@@ -60,6 +97,12 @@ class PaperTradingConfig(BaseModel):
     entry_start_time: str = "10:00"
     entry_cutoff_time: str = "15:10"
     observation: ObservationConfig = Field(default_factory=ObservationConfig)
+    # Dynamic sentinel params
+    reentry_after_pt_cooldown_minutes: int = Field(ge=0, le=120, default=30)
+    context_exit_enabled: bool = True
+    context_exit_range_pct: float = Field(ge=0.5, le=3.0, default=1.2)
+    context_exit_min_hold_minutes: int = Field(ge=0, le=60, default=15)
+    debit_context_unlock_threshold: float = Field(ge=30, le=70, default=55)
 
     @field_validator("eod_close_time", "entry_start_time", "entry_cutoff_time")
     @classmethod

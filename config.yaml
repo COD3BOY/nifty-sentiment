@@ -133,6 +133,36 @@ options_desk:
     otm_offset: 2
     spread_width: 2
     min_score: 40
+    context_adjustments:
+      enabled: true
+      vol_sell_premium_bonus: 10
+      vol_stand_down_penalty: -10
+      vol_buy_premium_penalty: -5
+      rv_expanding_penalty: -5
+      rv_contracting_bonus: 5
+      trend_alignment_bonus: 5
+      trend_conflict_penalty: -5
+      prior_day_doji_bonus: 5
+      prior_day_wide_range_penalty: -5
+      prior_day_wide_range_pct: 2.0
+      session_range_bound_bonus: 5
+      session_wide_range_penalty: -5
+      session_wide_range_pct: 1.5
+      session_ema_alignment_bonus: 5
+      session_ema_neutral_penalty: -3
+      session_rsi_momentum_bonus: 3
+      session_bb_reversal_bonus: 3
+      session_vwap_confirmation_bonus: 3
+      session_vwap_threshold_pct: 0.3
+      observation_bias_bonus: 5
+      observation_neutral_bonus: 3
+      weekly_trend_bonus: 3
+      regime_stability_bonus: 3
+      regime_stability_min_days: 3
+      regime_instability_penalty: -3
+      regime_instability_threshold: 4
+      consecutive_day_bonus: 3
+      consecutive_day_threshold: 3
 
 paper_trading:
   initial_capital: 5000000
@@ -140,6 +170,12 @@ paper_trading:
   auto_execute: true
   min_score_to_trade: 50
   debit_min_score_to_trade: 70
+  standdown_min_score_bump: 10
+  reentry_after_pt_cooldown_minutes: 30
+  context_exit_enabled: true
+  context_exit_range_pct: 1.2
+  context_exit_min_hold_minutes: 15
+  debit_context_unlock_threshold: 55
   trade_cooldown_seconds: 60
   max_lots: 4
   capital_utilization: 0.70

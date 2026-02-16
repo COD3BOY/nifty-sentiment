@@ -59,6 +59,45 @@ PARAMETER_BOUNDS: dict[str, tuple[float, float]] = {
     # --- Debit strategy penalties ---
     "iv_high_penalty_threshold": (12.0, 30.0),
     "bb_width_expanded_pct": (0.8, 3.0),
+
+    # --- Context adjustments ---
+    "vol_sell_premium_bonus": (0.0, 20.0),
+    "vol_stand_down_penalty": (-20.0, 0.0),
+    "vol_buy_premium_penalty": (-15.0, 0.0),
+    "rv_expanding_penalty": (-15.0, 0.0),
+    "rv_contracting_bonus": (0.0, 15.0),
+    "trend_alignment_bonus": (0.0, 15.0),
+    "trend_conflict_penalty": (-15.0, 0.0),
+    "prior_day_doji_bonus": (0.0, 15.0),
+    "prior_day_wide_range_penalty": (-15.0, 0.0),
+    "prior_day_wide_range_pct": (0.5, 5.0),
+    "session_range_bound_bonus": (0.0, 15.0),
+    "session_wide_range_penalty": (-15.0, 0.0),
+    "session_wide_range_pct": (0.5, 4.0),
+    "standdown_min_score_bump": (0.0, 25.0),
+
+    # --- Enhanced context adjustments ---
+    "session_ema_alignment_bonus": (0.0, 15.0),
+    "session_ema_neutral_penalty": (-10.0, 0.0),
+    "session_rsi_momentum_bonus": (0.0, 10.0),
+    "session_bb_reversal_bonus": (0.0, 10.0),
+    "session_vwap_confirmation_bonus": (0.0, 10.0),
+    "session_vwap_threshold_pct": (0.1, 1.0),
+    "observation_bias_bonus": (0.0, 15.0),
+    "observation_neutral_bonus": (0.0, 10.0),
+    "weekly_trend_bonus": (0.0, 10.0),
+    "regime_stability_bonus": (0.0, 10.0),
+    "regime_stability_min_days": (1.0, 30.0),
+    "regime_instability_penalty": (-10.0, 0.0),
+    "regime_instability_threshold": (2.0, 10.0),
+    "consecutive_day_bonus": (0.0, 10.0),
+    "consecutive_day_threshold": (2.0, 10.0),
+
+    # --- Dynamic sentinel params ---
+    "reentry_after_pt_cooldown_minutes": (0.0, 120.0),
+    "context_exit_range_pct": (0.5, 3.0),
+    "context_exit_min_hold_minutes": (0.0, 60.0),
+    "debit_context_unlock_threshold": (30.0, 70.0),
 }
 
 # -------------------------------------------------------------------------

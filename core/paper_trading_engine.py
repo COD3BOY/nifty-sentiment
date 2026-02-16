@@ -662,6 +662,20 @@ def evaluate_and_manage(
     min_score = cfg.get("min_score_to_trade", 30)
     debit_min_score = cfg.get("debit_min_score_to_trade", 55)
 
+    # --- Context summary notes ---
+    notes: list[str] = []
+    if context is not None:
+        vol = context.vol
+        notes.append(f"Vol regime: {vol.regime} | RV trend: {vol.rv_trend}")
+        notes.append(f"Context bias: {context.context_bias} | Trend: {context.multi_day_trend}")
+        if context.prior_day is not None:
+            notes.append(
+                f"Prior day: {context.prior_day.candle_type} | range {context.prior_day.range_pct:.1f}%"
+            )
+        notes.append(
+            f"Session: {context.session.session_trend} | range {context.session.session_range_pct:.1f}%"
+        )
+
     # --- Phase 1: Manage existing positions ---
     still_open: list[PaperPosition] = []
     new_records: list[TradeRecord] = []
@@ -719,6 +733,53 @@ def evaluate_and_manage(
                     iv_expansion, iv_expansion_threshold,
                 )
 
+        # Context-driven exits (Change 4)
+        if exit_reason is None and context is not None and cfg.get("context_exit_enabled", True):
+            ctx_min_hold = cfg.get("context_exit_min_hold_minutes", 15)
+            hold_minutes = (_now_ist() - position.entry_time).total_seconds() / 60
+            if hold_minutes >= ctx_min_hold:
+                # 4a. Neutral credit exit on strong trend emergence
+                if (
+                    position.strategy in ("Short Straddle", "Short Strangle", "Iron Condor")
+                    and context.session.session_trend in ("trending_up", "trending_down")
+                    and context.session.session_range_pct > cfg.get("context_exit_range_pct", 1.2)
+                ):
+                    exit_reason = PositionStatus.CLOSED_CONTEXT_EXIT
+                    logger.info(
+                        "Context exit (neutral trend): %s | session %s range %.1f%%",
+                        position.strategy, context.session.session_trend,
+                        context.session.session_range_pct,
+                    )
+
+                # 4b. Directional credit exit on trend reversal
+                if exit_reason is None and position.strategy == "Bull Put Spread":
+                    if (
+                        context.multi_day_trend == "bearish"
+                        and context.session.ema_alignment == "bearish"
+                    ):
+                        exit_reason = PositionStatus.CLOSED_CONTEXT_EXIT
+                        logger.info("Context exit (BPS reversal): trend bearish + EMA bearish")
+                if exit_reason is None and position.strategy == "Bear Call Spread":
+                    if (
+                        context.multi_day_trend == "bullish"
+                        and context.session.ema_alignment == "bullish"
+                    ):
+                        exit_reason = PositionStatus.CLOSED_CONTEXT_EXIT
+                        logger.info("Context exit (BCS reversal): trend bullish + EMA bullish")
+
+                # 4c. Vol regime shift exit
+                if (
+                    exit_reason is None
+                    and position.entry_vol_regime == "sell_premium"
+                    and position.strategy_type == StrategyType.CREDIT.value
+                    and context.vol.regime == "stand_down"
+                ):
+                    exit_reason = PositionStatus.CLOSED_CONTEXT_EXIT
+                    logger.info(
+                        "Context exit (regime shift): %s entered sell_premium, now stand_down",
+                        position.strategy,
+                    )
+
         if exit_reason:
             _closed_pos, record = close_position(
                 position, exit_reason,
@@ -763,7 +824,8 @@ def evaluate_and_manage(
             "Data stale: %.1f min since last candle (limit: %d min). Blocking new trades.",
             technicals.data_staleness_minutes, max_staleness,
         )
-        return state
+        notes.append(f"Data stale: {technicals.data_staleness_minutes:.0f}m > {max_staleness}m limit")
+        return state.model_copy(update={"trade_status_notes": notes})
 
     # --- Phase 2: Open new positions ---
     # Trading window guard — only open trades during allowed hours
@@ -777,10 +839,39 @@ def evaluate_and_manage(
             "Warmup period: %s IST < %s — collecting data, no trades yet",
             now.strftime('%H:%M'), entry_start_time,
         )
-        return state
+        notes.append(f"Warmup: {now.strftime('%H:%M')} < {entry_start_time}")
+        return state.model_copy(update={"trade_status_notes": notes})
     if now.time() >= time(ch, cm):
         logger.info("Entry cutoff: %s IST >= %s — blocking new trades", now.strftime('%H:%M'), entry_cutoff_time)
-        return state
+        notes.append(f"Entry cutoff: {now.strftime('%H:%M')} >= {entry_cutoff_time}")
+        return state.model_copy(update={"trade_status_notes": notes})
+
+    # Vol stand-down gate: raise min score thresholds when vol regime is stand_down
+    if context is not None and context.vol.regime == "stand_down":
+        standdown_bump = cfg.get("standdown_min_score_bump", 10)
+        min_score += standdown_bump
+        debit_min_score += standdown_bump
+        notes.append(f"Stand-down bump: min_score +{standdown_bump} (credit={min_score}, debit={debit_min_score})")
+        logger.info(
+            "Vol stand-down: raising min_score by %d (credit=%d, debit=%d)",
+            standdown_bump, min_score, debit_min_score,
+        )
+
+    # Change 5: Debit unlock when context strongly favors buying
+    if context is not None and context.vol.regime == "buy_premium":
+        debit_unlock_threshold = cfg.get("debit_context_unlock_threshold", 55)
+        if debit_min_score > debit_unlock_threshold:
+            trend_matches = context.multi_day_trend in ("bullish", "bearish")
+            session_matches = context.session.ema_alignment in ("bullish", "bearish")
+            if trend_matches and session_matches:
+                old_debit = debit_min_score
+                debit_min_score = debit_unlock_threshold
+                notes.append(f"Debit unlock: {old_debit} → {debit_unlock_threshold} (buy_premium + trend + EMA)")
+                logger.info(
+                    "Debit unlock: %d → %d (buy_premium + trend=%s + EMA=%s)",
+                    old_debit, debit_unlock_threshold,
+                    context.multi_day_trend, context.session.ema_alignment,
+                )
 
     # Daily loss circuit breaker (includes unrealized PnL)
     daily_loss_limit_pct = cfg.get("daily_loss_limit_pct", 3.0)
@@ -793,7 +884,8 @@ def evaluate_and_manage(
             abs(total_session_pnl), session_realized_pnl, state.unrealized_pnl,
             daily_loss_limit_pct, daily_loss_limit,
         )
-        return state
+        notes.append("CIRCUIT BREAKER: daily loss limit hit")
+        return state.model_copy(update={"trade_status_notes": notes})
 
     # Max trades per day gate
     max_trades_per_day = cfg.get("max_trades_per_day", 6)
@@ -807,7 +899,8 @@ def evaluate_and_manage(
             sum(1 for t in state.trade_log if t.entry_time.date() == today),
             len([p for p in state.open_positions if p.status == PositionStatus.OPEN]),
         )
-        return state
+        notes.append(f"Max trades/day ({max_trades_per_day}) reached")
+        return state.model_copy(update={"trade_status_notes": notes})
 
     if (
         state.is_auto_trading
@@ -822,14 +915,31 @@ def evaluate_and_manage(
                 "Trade cooldown active — %.0fs remaining",
                 cooldown - (now_ts - state.last_trade_opened_ts),
             )
-            return state
+            notes.append(f"Cooldown: {cooldown - (now_ts - state.last_trade_opened_ts):.0f}s remaining")
+            return state.model_copy(update={"trade_status_notes": notes})
 
-        # Track held strategy types — include today's closed trades to prevent re-entry
+        # Change 3: Track held strategies — allow re-entry after profitable exit + cooldown
         held_strategies = {p.strategy for p in state.open_positions}
         today = _now_ist().date()
+        reentry_cooldown = cfg.get("reentry_after_pt_cooldown_minutes", 30)
         for record in state.trade_log:
             if record.entry_time.date() == today:
-                held_strategies.add(record.strategy)
+                # Always block re-entry of loss/context trades
+                if record.exit_reason in (
+                    PositionStatus.CLOSED_STOP_LOSS.value,
+                    PositionStatus.CLOSED_IV_EXPANSION.value,
+                    PositionStatus.CLOSED_CONTEXT_EXIT.value,
+                ):
+                    held_strategies.add(record.strategy)
+                # Block PT trades only during cooldown
+                elif record.exit_reason == PositionStatus.CLOSED_PROFIT_TARGET.value:
+                    if record.exit_time:
+                        minutes_since = (_now_ist() - record.exit_time).total_seconds() / 60
+                        if minutes_since < reentry_cooldown:
+                            held_strategies.add(record.strategy)
+                else:
+                    # EOD, manual, time_limit — block re-entry
+                    held_strategies.add(record.strategy)
 
         # Portfolio concentration limits
         max_open = cfg.get("max_open_positions", 3)
@@ -855,7 +965,15 @@ def evaluate_and_manage(
                 logger.debug("Skipping %s — score %.1f < min %d", suggestion.strategy.value, suggestion.score, effective_min)
                 continue
             # (d) Confidence gate — High for credit, Medium+ for debit
+            # Change 2: Context-confirmed credit accepts Medium
             min_confidence = {"High"} if not is_debit else {"High", "Medium"}
+            if not is_debit:
+                ctx_reasons = [r for r in suggestion.reasoning if r.startswith("[CTX]")]
+                positive_ctx = sum(1 for r in ctx_reasons if "+" in r)
+                negative_ctx = sum(1 for r in ctx_reasons if any(w in r for w in ["-", "penalty", "conflict", "hurts"]))
+                context_confirmed = positive_ctx >= 3 and negative_ctx == 0
+                if context_confirmed:
+                    min_confidence = {"High", "Medium"}
             if suggestion.confidence not in min_confidence:
                 logger.info("Skipping %s — confidence %s (require %s)", suggestion.strategy.value, suggestion.confidence, "High" if not is_debit else "Medium+")
                 continue
@@ -873,6 +991,9 @@ def evaluate_and_manage(
                 expiry=chain.expiry,
                 technicals=technicals, analytics=analytics, chain=chain,
             )
+            # Set vol regime at entry for context-driven exits
+            if context is not None:
+                position = position.model_copy(update={"entry_vol_regime": context.vol.regime})
             logger.info(
                 "Paper trade opened: %s | bias=%s | conf=%s | score=%.1f | lots=%d | margin=%.0f (%s) | premium=%.2f | cost=%.2f",
                 position.strategy, position.direction_bias, position.confidence,
@@ -890,7 +1011,7 @@ def evaluate_and_manage(
             # (c) Max 1 trade per cycle
             break
 
-    return state
+    return state.model_copy(update={"trade_status_notes": notes})
 
 
 # ---------------------------------------------------------------------------

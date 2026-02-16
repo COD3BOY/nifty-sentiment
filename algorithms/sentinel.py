@@ -40,7 +40,7 @@ class SentinelAlgorithm(TradingAlgorithm):
         observation: ObservationSnapshot | None = None,
         context: MarketContext | None = None,
     ) -> list[TradeSuggestion]:
-        return _v1_generate_suggestions(analytics, technicals, chain)
+        return _v1_generate_suggestions(analytics, technicals, chain, context=context, observation=observation)
 
     def evaluate_and_manage(
         self,
@@ -58,4 +58,5 @@ class SentinelAlgorithm(TradingAlgorithm):
             state, suggestions, chain,
             technicals=technicals, analytics=analytics,
             lot_size=lot_size, refresh_ts=refresh_ts,
+            context=context,
         )

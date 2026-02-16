@@ -8,8 +8,6 @@ Five context levels, narrow to broad:
   - MarketContext: composite — what algorithms receive
 """
 
-from __future__ import annotations
-
 from pydantic import BaseModel, Field
 
 
