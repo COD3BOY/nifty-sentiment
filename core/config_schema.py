@@ -80,6 +80,15 @@ class ContextAdjustmentsConfig(BaseModel):
         extra = "allow"
 
 
+class NotificationsConfig(BaseModel):
+    """Validation for trade notification settings."""
+    browser_enabled: bool = True
+    toast_enabled: bool = True
+
+    class Config:
+        extra = "allow"
+
+
 class PaperTradingConfig(BaseModel):
     initial_capital: float = Field(gt=0)
     lot_size: int = Field(gt=0)
@@ -97,6 +106,7 @@ class PaperTradingConfig(BaseModel):
     entry_start_time: str = "10:00"
     entry_cutoff_time: str = "15:10"
     observation: ObservationConfig = Field(default_factory=ObservationConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     # Dynamic sentinel params
     reentry_after_pt_cooldown_minutes: int = Field(ge=0, le=120, default=30)
     context_exit_enabled: bool = True

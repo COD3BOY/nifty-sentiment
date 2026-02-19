@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from core.config import load_config
 from core.options_models import OptionChainData, OptionsAnalytics, TechnicalIndicators, TradeSuggestion
@@ -15,6 +16,7 @@ from core.paper_trading_models import (
     PaperPosition,
     PaperTradingState,
     PositionStatus,
+    TradeRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,6 +131,157 @@ def _exit_reason_label(status: str) -> str:
     }.get(status, status)
 
 
+# ---------------------------------------------------------------------------
+# Trade notification helpers
+# ---------------------------------------------------------------------------
+
+def _detect_trade_events(
+    old_state: PaperTradingState,
+    new_state: PaperTradingState,
+) -> tuple[list[PaperPosition], list[TradeRecord]]:
+    """Compare old and new state to find newly opened and closed trades.
+
+    Returns (new_opens, new_closes).
+    """
+    old_open_ids = {p.id for p in old_state.open_positions}
+    new_open_ids = {p.id for p in new_state.open_positions}
+    old_trade_ids = {t.id for t in old_state.trade_log}
+
+    new_opens = [p for p in new_state.open_positions if p.id not in old_open_ids]
+    new_closes = [t for t in new_state.trade_log if t.id not in old_trade_ids]
+
+    return new_opens, new_closes
+
+
+def _build_notification_events(
+    new_opens: list[PaperPosition],
+    new_closes: list[TradeRecord],
+    algo_display_name: str,
+) -> list[dict]:
+    """Build a list of notification event dicts from opens/closes.
+
+    Each dict has: title, body, tag (for dedup), is_profit (bool|None).
+    """
+    events: list[dict] = []
+    for pos in new_opens:
+        events.append({
+            "title": f"{algo_display_name} \u2014 Trade Opened",
+            "body": f"{pos.strategy} | {pos.direction_bias} | {pos.lots} lots | Score: {pos.score:.0f} ({pos.confidence})",
+            "tag": f"open_{pos.id}",
+            "is_profit": None,
+        })
+    for rec in new_closes:
+        pnl_str = _fmt_pnl(rec.net_pnl)
+        events.append({
+            "title": f"{algo_display_name} \u2014 Trade Closed",
+            "body": f"{rec.strategy} | {_exit_reason_label(rec.exit_reason)} | {pnl_str}",
+            "tag": f"close_{rec.id}",
+            "is_profit": rec.net_pnl >= 0,
+        })
+    return events
+
+
+def _fire_toasts(events: list[dict]) -> None:
+    """Show st.toast() for each notification event."""
+    for ev in events:
+        if ev["is_profit"] is None:
+            icon = "\U0001f514"  # bell
+        elif ev["is_profit"]:
+            icon = "\u2705"  # checkmark
+        else:
+            icon = "\u274c"  # X
+        st.toast(f"**{ev['title']}**\n\n{ev['body']}", icon=icon)
+
+
+def _fire_browser_notifications(events: list[dict]) -> None:
+    """Inject JS to fire Web Notifications API with tag-based dedup."""
+    if not events:
+        return
+    # Build JS for each event
+    js_parts = []
+    for ev in events:
+        title_js = ev["title"].replace("\\", "\\\\").replace("'", "\\'")
+        body_js = ev["body"].replace("\\", "\\\\").replace("'", "\\'")
+        tag_js = ev["tag"].replace("\\", "\\\\").replace("'", "\\'")
+        js_parts.append(
+            f"new Notification('{title_js}', {{body: '{body_js}', tag: '{tag_js}', requireInteraction: false}});"
+        )
+    js_block = "\n".join(js_parts)
+    html = f"""
+    <script>
+    if (window.Notification && Notification.permission === 'granted') {{
+        {js_block}
+    }}
+    </script>
+    """
+    components.html(html, height=0)
+
+
+def _render_notification_permission_prompt(algo_name: str) -> None:
+    """Render a one-time browser notification permission prompt.
+
+    Only shown when permission is 'default' (not yet asked). Disappears
+    after the user clicks it or if permission was already granted/denied.
+    """
+    perm_key = f"notification_perm_rendered_{algo_name}"
+    if st.session_state.get(perm_key):
+        return
+    html = """
+    <div id="notif-prompt" style="display:none; margin-bottom: 8px;">
+        <button onclick="
+            Notification.requestPermission().then(function(p) {
+                document.getElementById('notif-prompt').style.display = 'none';
+            });
+        " style="
+            background: #4f46e5; color: white; border: none;
+            padding: 6px 16px; border-radius: 6px; cursor: pointer;
+            font-size: 0.85em;
+        ">Enable Trade Notifications</button>
+    </div>
+    <script>
+    if (window.Notification && Notification.permission === 'default') {
+        document.getElementById('notif-prompt').style.display = 'block';
+    }
+    </script>
+    """
+    components.html(html, height=40)
+    st.session_state[perm_key] = True
+
+
+def _get_notif_config() -> dict:
+    """Get notification config from paper_trading config."""
+    cfg = load_config().get("paper_trading", {})
+    notif = cfg.get("notifications", {})
+    return {
+        "browser_enabled": notif.get("browser_enabled", True),
+        "toast_enabled": notif.get("toast_enabled", True),
+    }
+
+
+def _fire_notifications(events: list[dict], algo_name: str) -> None:
+    """Fire both toast and browser notifications, with dedup tracking."""
+    if not events:
+        return
+
+    notif_cfg = _get_notif_config()
+    dedup_key = f"notified_trade_ids_{algo_name}"
+    notified = st.session_state.get(dedup_key, set())
+
+    # Filter out already-notified events
+    fresh = [ev for ev in events if ev["tag"] not in notified]
+    if not fresh:
+        return
+
+    if notif_cfg["toast_enabled"]:
+        _fire_toasts(fresh)
+    if notif_cfg["browser_enabled"]:
+        _fire_browser_notifications(fresh)
+
+    # Track notified tags
+    notified = notified | {ev["tag"] for ev in fresh}
+    st.session_state[dedup_key] = notified
+
+
 def render_paper_trading_tab(
     suggestions: list[TradeSuggestion] | None,
     chain: OptionChainData | None,
@@ -153,6 +306,11 @@ def render_paper_trading_tab(
     context : MarketContext from the context engine
     """
     state = _get_state(algo_name)
+
+    # --- Fire any pending notifications stashed before a rerun ---
+    pending_notif_key = f"pending_notifications_{algo_name}"
+    if pending_notif_key in st.session_state:
+        _fire_notifications(st.session_state.pop(pending_notif_key), algo_name)
 
     # --- Header row (render before engine so reset takes effect first) ---
     h1, h2 = st.columns([4, 1.5])
@@ -209,12 +367,16 @@ def render_paper_trading_tab(
                 _clear_critiques_db()
                 st.rerun()
 
+    # --- Browser notification permission prompt (once per algo tab) ---
+    _render_notification_permission_prompt(algo_name)
+
     # --- Run engine logic (evaluate_and_manage) ---
     cfg = load_config().get("paper_trading", {})
     lot_size = cfg.get("lot_size", 25)
     refresh_ts = st.session_state.get("options_last_refresh", 0.0)
 
     _eval_fn = evaluate_fn or evaluate_and_manage
+    old_state_snapshot = state  # capture pre-eval state for diff
     new_state = _eval_fn(
         state, suggestions, chain,
         technicals=technicals, analytics=analytics,
@@ -222,6 +384,13 @@ def render_paper_trading_tab(
         observation=observation,
         context=context,
     )
+
+    # --- Fire notifications for engine-triggered opens/closes ---
+    new_opens, new_closes = _detect_trade_events(old_state_snapshot, new_state)
+    if new_opens or new_closes:
+        events = _build_notification_events(new_opens, new_closes, algo_display_name)
+        _fire_notifications(events, algo_name)
+
     _set_state(new_state, algo_name)
     state = new_state
 
@@ -297,10 +466,13 @@ def render_paper_trading_tab(
                         "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
+                # Stash close notifications for firing after rerun
+                close_events = _build_notification_events([], new_records, algo_display_name)
+                st.session_state[f"pending_notifications_{algo_name}"] = close_events
                 _set_state(new_state, algo_name)
                 st.rerun()
         for pos in open_pos:
-            _render_open_position_card(state, pos, technicals=technicals, analytics=analytics, chain=chain, algo_name=algo_name)
+            _render_open_position_card(state, pos, technicals=technicals, analytics=analytics, chain=chain, algo_name=algo_name, algo_display_name=algo_display_name)
     else:
         if state.is_auto_trading:
             st.info("No open positions. Auto-trading is ON — new positions will open on the next Options Desk refresh.")
@@ -394,6 +566,7 @@ def _render_open_position_card(
     analytics: OptionsAnalytics | None = None,
     chain: OptionChainData | None = None,
     algo_name: str = "sentinel",
+    algo_display_name: str = "Paper Trading",
 ) -> None:
     """Render a single open position as an expander card."""
     pnl = pos.total_unrealized_pnl
@@ -461,6 +634,9 @@ def _render_open_position_card(
                         "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
+                # Stash close notification for firing after rerun
+                close_events = _build_notification_events([], [record], algo_display_name)
+                st.session_state[f"pending_notifications_{algo_name}"] = close_events
                 _set_state(new_state, algo_name)
                 st.rerun()
 

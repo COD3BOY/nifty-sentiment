@@ -215,6 +215,10 @@ paper_trading:
     min_leg_premium: 2.0                    # Skip legs with LTP < ₹2
     min_net_premium_per_lot: 100            # Skip if |net premium| per lot < ₹100
 
+  notifications:
+    browser_enabled: true
+    toast_enabled: true
+
   margin_estimates:
     short_straddle: 150000
     short_strangle: 135000
