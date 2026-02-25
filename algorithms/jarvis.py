@@ -795,6 +795,14 @@ class JarvisAlgorithm(TradingAlgorithm):
             notes.append(f"Observation period active — collecting data before {entry_start}")
             return state.model_copy(update={"trade_status_notes": notes})
 
+        # Entry end time — no new trades after this time
+        entry_end = cfg.get("entry_end_time", "14:45")
+        eh, em = (int(x) for x in entry_end.split(":"))
+        now = _now_ist()
+        if now.time() >= time(eh, em):
+            notes.append(f"Entry cutoff: {now.strftime('%H:%M')} >= {entry_end}")
+            return state.model_copy(update={"trade_status_notes": notes})
+
         if not state.is_auto_trading:
             notes.append("Auto-trading is OFF")
             return state.model_copy(update={"trade_status_notes": notes})
@@ -816,7 +824,7 @@ class JarvisAlgorithm(TradingAlgorithm):
             return state.model_copy(update={"trade_status_notes": notes})
 
         # Cooldown
-        now_ts = _time.time()
+        now_ts = refresh_ts if refresh_ts > 0 else _time.time()
         if state.last_trade_opened_ts > 0 and (now_ts - state.last_trade_opened_ts) < 60:
             notes.append("Trade cooldown active (60s between trades)")
             return state.model_copy(update={"trade_status_notes": notes})
@@ -878,7 +886,7 @@ class JarvisAlgorithm(TradingAlgorithm):
 
             state = state.model_copy(update={
                 "open_positions": state.open_positions + [position],
-                "last_trade_opened_ts": _time.time(),
+                "last_trade_opened_ts": refresh_ts if refresh_ts > 0 else _time.time(),
             })
             notes.append(f"Opened: {position.strategy} ({position.lots} lots)")
             opened_trade = True

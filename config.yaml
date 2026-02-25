@@ -339,6 +339,63 @@ algorithms:
     consecutive_loss_halt: 3
     # Execution
     slippage_per_leg: 0.05                   # ₹0.05 per leg (1 tick)
+    # Timing
+    entry_end_time: "14:45"                  # No new trades after 14:45
+  jarvis_m:
+    enabled: true
+    display_name: "V2 Jarvis M"
+    # Capital
+    initial_capital: 5000000
+    lot_size: 65
+    # Risk limits (same as Jarvis)
+    max_capital_risk_per_trade_pct: 1.0
+    max_margin_utilization_pct: 30.0
+    daily_loss_shutdown_pct: 2.0
+    max_open_positions: 5
+    max_positions_per_direction: 2
+    vix_spread_only_threshold: 28.0
+    expiry_day_cutoff_time: "13:30"
+    # Credit strategy rules
+    credit_max_risk_reward: 2.5
+    strangle_min_credit_pct_spot: 2.0
+    strangle_delta_min: 0.12
+    strangle_delta_max: 0.20
+    spread_widths: [50, 100]
+    spread_min_credit_pct_width: 30.0
+    credit_sl_multiplier: 2.2
+    strangle_leg_double_exit: true
+    strangle_delta_exit_threshold: 0.35
+    strangle_total_loss_multiplier: 1.2
+    # Debit strategy rules
+    debit_min_risk_reward: 1.8
+    debit_min_pop_pct: 40.0
+    debit_sl_premium_loss_pct: 50.0
+    debit_max_sessions: 3
+    # Liquidity thresholds
+    min_oi: 10000
+    min_volume: 1000
+    max_bid_ask_pct: 5.0
+    # IV percentile thresholds
+    credit_min_iv_percentile: 50.0
+    debit_max_iv_percentile: 50.0
+    # Portfolio defense
+    consecutive_loss_half_size: 2
+    consecutive_loss_halt: 3
+    # Execution
+    slippage_per_leg: 0.05
+    # Context + timing (Jarvis M specific)
+    entry_end_time: "14:45"
+    max_trades_per_day: 4
+    min_score_to_trade: 50
+    debit_min_score_to_trade: 70
+    trade_cooldown_seconds: 60
+    standdown_min_score_bump: 10
+    reentry_after_pt_cooldown_minutes: 30
+    context_exit_enabled: true
+    context_exit_range_pct: 1.2
+    context_exit_min_hold_minutes: 15
+    iv_expansion_exit_pts: 3.0
+    debit_context_unlock_threshold: 55
   atlas:
     enabled: true
     display_name: "V4 Atlas"
