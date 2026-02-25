@@ -639,8 +639,8 @@ def _render_open_position_card(
             leg_rows.append({
                 "Action": leg.action,
                 "Instrument": leg.instrument,
-                "Entry LTP": f"\u20b9{leg.entry_ltp:.1f}",
-                "Current LTP": f"\u20b9{leg.current_ltp:.1f}",
+                "Entry LTP": f"\u20b9{leg.entry_ltp:.2f}",
+                "Current LTP": f"\u20b9{leg.current_ltp:.2f}",
                 "Leg P&L": _fmt_pnl(leg.unrealized_pnl),
             })
         st.dataframe(pd.DataFrame(leg_rows), width="stretch", hide_index=True)
@@ -791,8 +791,8 @@ def _render_trade_history(trades: list[dict]) -> None:
                 leg_rows.append({
                     "Action": leg.get("action", ""),
                     "Instrument": leg.get("instrument", ""),
-                    "Entry": f"\u20b9{leg.get('entry_ltp', 0):.1f}",
-                    "Exit": f"\u20b9{leg.get('exit_ltp', 0):.1f}",
+                    "Entry": f"\u20b9{leg.get('entry_ltp', 0):.2f}",
+                    "Exit": f"\u20b9{leg.get('exit_ltp', 0):.2f}",
                     "P&L": _fmt_pnl(leg.get("pnl", 0)),
                 })
             if leg_rows:
