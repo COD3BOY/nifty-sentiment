@@ -65,6 +65,8 @@ def _get_state(algo_name: str = "sentinel") -> PaperTradingState:
                 saved.capital_remaining,
             )
             st.session_state[key] = saved
+            # One-time migration of existing JSON trades to SQLite
+            _migrate_state_trades_to_db(saved, algo_name)
         else:
             logger.warning(
                 "No saved state for %s — creating fresh state. "
@@ -258,6 +260,48 @@ def _get_notif_config() -> dict:
     }
 
 
+def _migrate_state_trades_to_db(state: PaperTradingState, algo_name: str) -> None:
+    """One-time migration: insert trades from JSON state into SQLite.
+
+    Only inserts trades whose IDs don't already exist in the DB.
+    Guarded by a session_state flag so it runs at most once per algo per session.
+    """
+    flag_key = f"trades_migrated_{algo_name}"
+    if st.session_state.get(flag_key):
+        return
+    st.session_state[flag_key] = True
+
+    if not state.trade_log:
+        return
+
+    try:
+        from core.database import SentimentDatabase
+        db = SentimentDatabase()
+        existing = {t["id"] for t in db.get_trades(algo_name, limit=10000)}
+        to_migrate = [t for t in state.trade_log if t.id not in existing]
+        if to_migrate:
+            for rec in to_migrate:
+                db.save_trade(rec, algo_name)
+            logger.info(
+                "Migrated %d trade(s) from JSON state to DB for %s",
+                len(to_migrate), algo_name,
+            )
+    except Exception:
+        logger.warning("Trade migration to DB failed for %s", algo_name, exc_info=True)
+
+
+def _persist_trades_to_db(records: list[TradeRecord], algo_name: str) -> None:
+    """Persist closed TradeRecords to SQLite for durable history."""
+    try:
+        from core.database import SentimentDatabase
+        db = SentimentDatabase()
+        for rec in records:
+            db.save_trade(rec, algo_name)
+        logger.info("Persisted %d trade(s) to DB for %s", len(records), algo_name)
+    except Exception:
+        logger.warning("Failed to persist trades to DB for %s", algo_name, exc_info=True)
+
+
 def _fire_notifications(events: list[dict], algo_name: str) -> None:
     """Fire both toast and browser notifications, with dedup tracking."""
     if not events:
@@ -387,6 +431,8 @@ def render_paper_trading_tab(
 
     # --- Fire notifications for engine-triggered opens/closes ---
     new_opens, new_closes = _detect_trade_events(old_state_snapshot, new_state)
+    if new_closes:
+        _persist_trades_to_db(new_closes, algo_name)
     if new_opens or new_closes:
         events = _build_notification_events(new_opens, new_closes, algo_display_name)
         _fire_notifications(events, algo_name)
@@ -466,6 +512,7 @@ def render_paper_trading_tab(
                         "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
+                _persist_trades_to_db(new_records, algo_name)
                 # Stash close notifications for firing after rerun
                 close_events = _build_notification_events([], new_records, algo_display_name)
                 st.session_state[f"pending_notifications_{algo_name}"] = close_events
@@ -503,8 +550,9 @@ def render_paper_trading_tab(
     # --- Trade History ---
     st.divider()
     st.subheader("Trade History")
-    if state.trade_log:
-        _render_trade_history(state)
+    db_trades = _load_trade_history(algo_name)
+    if db_trades:
+        _render_trade_history(db_trades)
 
         # --- EOD Report Downloads ---
         st.divider()
@@ -634,6 +682,7 @@ def _render_open_position_card(
                         "pending_critiques": state.pending_critiques + pending_ids,
                     },
                 )
+                _persist_trades_to_db([record], algo_name)
                 # Stash close notification for firing after rerun
                 close_events = _build_notification_events([], [record], algo_display_name)
                 st.session_state[f"pending_notifications_{algo_name}"] = close_events
@@ -657,8 +706,22 @@ def _render_open_position_card(
             st.metric("Capital Utilization", f"{util_pct:.1f}%")
 
 
-def _render_trade_history(state: PaperTradingState) -> None:
-    """Render closed trade history as expandable cards with inline critiques."""
+def _load_trade_history(algo_name: str) -> list[dict]:
+    """Load trade history from SQLite (durable source of truth)."""
+    try:
+        from core.database import SentimentDatabase
+        db = SentimentDatabase()
+        return db.get_trades(algo_name)
+    except Exception:
+        logger.warning("Failed to load trade history from DB for %s", algo_name, exc_info=True)
+        return []
+
+
+def _render_trade_history(trades: list[dict]) -> None:
+    """Render closed trade history as expandable cards with inline critiques.
+
+    ``trades`` is a list of dicts from ``db.get_trades()``, ordered newest-first.
+    """
     # Load all critiques from DB, keyed by trade_id
     critique_map: dict[str, dict] = {}
     try:
@@ -669,57 +732,62 @@ def _render_trade_history(state: PaperTradingState) -> None:
     except Exception:
         pass
 
-    for i, t in enumerate(reversed(state.trade_log), 1):
-        critique = critique_map.get(t.id)
+    for i, t in enumerate(trades, 1):
+        trade_id = t["id"]
+        critique = critique_map.get(trade_id)
         grade_tag = ""
         if critique:
             grade = critique["overall_grade"]
-            color = _GRADE_COLORS.get(grade, "#94a3b8")
             grade_tag = f" | {grade.upper()}"
 
-        pnl_sign = "+" if t.net_pnl > 0 else ""
+        net_pnl = t.get("net_pnl", 0) or 0
+        pnl_sign = "+" if net_pnl > 0 else ""
         label = (
-            f"#{i} {t.strategy} | {t.direction_bias} | {t.lots}L | "
-            f"{_exit_reason_label(t.exit_reason)} | "
-            f"{pnl_sign}\u20b9{t.net_pnl:,.0f}{grade_tag}"
+            f"#{i} {t['strategy']} | {t.get('direction_bias', '')} | {t.get('lots', 1)}L | "
+            f"{_exit_reason_label(t.get('exit_reason', ''))} | "
+            f"{pnl_sign}\u20b9{net_pnl:,.0f}{grade_tag}"
         )
         with st.expander(label, expanded=False):
             # Trade summary metrics
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
-                st.metric("Entry", _fmt_time(t.entry_time))
+                st.metric("Entry", _fmt_time(t["entry_time"]))
             with c2:
-                st.metric("Exit", _fmt_time(t.exit_time))
+                st.metric("Exit", _fmt_time(t["exit_time"]))
             with c3:
-                st.metric("Premium", _fmt_pnl(t.net_premium))
+                st.metric("Premium", _fmt_pnl(t.get("net_premium", 0) or 0))
             with c4:
-                st.metric("Gross P&L", _fmt_pnl(t.realized_pnl))
+                st.metric("Gross P&L", _fmt_pnl(t.get("realized_pnl", 0) or 0))
             with c5:
-                st.metric("Cost", f"\u20b9{t.execution_cost:,.0f}")
+                st.metric("Cost", f"\u20b9{(t.get('execution_cost', 0) or 0):,.0f}")
             with c6:
-                st.metric("Net P&L", _fmt_pnl(t.net_pnl))
+                st.metric("Net P&L", _fmt_pnl(net_pnl))
 
             # Drawdown / favorable if available
-            if t.max_favorable > 0 or t.max_drawdown > 0:
+            max_fav = t.get("max_favorable", 0) or 0
+            max_dd = t.get("max_drawdown", 0) or 0
+            if max_fav > 0 or max_dd > 0:
                 d1, d2, d3, d4 = st.columns(4)
                 with d1:
-                    st.metric("Max Favorable", _fmt_pnl(t.max_favorable))
+                    st.metric("Max Favorable", _fmt_pnl(max_fav))
                 with d2:
-                    st.metric("Max Drawdown", f"\u20b9{t.max_drawdown:,.0f}")
+                    st.metric("Max Drawdown", f"\u20b9{max_dd:,.0f}")
                 with d3:
-                    if t.spot_at_entry > 0:
-                        st.metric("Spot at Entry", f"{t.spot_at_entry:,.1f}")
+                    spot_entry = t.get("spot_at_entry", 0) or 0
+                    if spot_entry > 0:
+                        st.metric("Spot at Entry", f"{spot_entry:,.1f}")
                 with d4:
-                    if t.spot_at_exit > 0:
-                        move = t.spot_at_exit - t.spot_at_entry
-                        st.metric("Spot at Exit", f"{t.spot_at_exit:,.1f}", delta=f"{move:+.1f}")
+                    spot_exit = t.get("spot_at_exit", 0) or 0
+                    if spot_exit > 0:
+                        move = spot_exit - spot_entry
+                        st.metric("Spot at Exit", f"{spot_exit:,.1f}", delta=f"{move:+.1f}")
 
             # Margin source badge
-            _render_margin_badge(t.margin_source, prefix="Margin: ")
+            _render_margin_badge(t.get("margin_source", "static"), prefix="Margin: ")
 
             # Legs detail
             leg_rows = []
-            for leg in t.legs_summary:
+            for leg in (t.get("legs_summary") or []):
                 leg_rows.append({
                     "Action": leg.get("action", ""),
                     "Instrument": leg.get("instrument", ""),
@@ -731,16 +799,18 @@ def _render_trade_history(state: PaperTradingState) -> None:
                 st.dataframe(pd.DataFrame(leg_rows), width="stretch", hide_index=True)
 
             # Entry & exit context
-            if t.entry_context and isinstance(t.entry_context, dict):
-                reasons = t.entry_context.get("strategy_reasoning", [])
+            entry_ctx = t.get("entry_context")
+            if entry_ctx and isinstance(entry_ctx, dict):
+                reasons = entry_ctx.get("strategy_reasoning", [])
                 if reasons:
                     st.markdown("**Entry reasoning:** " + " / ".join(reasons))
-                entry_indicators = _format_context_indicators(t.entry_context)
+                entry_indicators = _format_context_indicators(entry_ctx)
                 if entry_indicators:
                     st.caption("Entry: " + " | ".join(entry_indicators))
 
-            if t.exit_context and isinstance(t.exit_context, dict):
-                exit_indicators = _format_context_indicators(t.exit_context)
+            exit_ctx = t.get("exit_context")
+            if exit_ctx and isinstance(exit_ctx, dict):
+                exit_indicators = _format_context_indicators(exit_ctx)
                 if exit_indicators:
                     st.caption("Exit: " + " | ".join(exit_indicators))
 

@@ -192,6 +192,39 @@ class VolRegimeRow(Base):
     p_vrp = Column(Float, nullable=False)
 
 
+class ClosedTradeRow(Base):
+    """Persistent record of every closed trade, survives state resets."""
+
+    __tablename__ = "closed_trades"
+
+    id = Column(String(20), primary_key=True)  # TradeRecord.id (UUID prefix)
+    algo_name = Column(String(30), nullable=False, index=True)
+    strategy = Column(String(50), nullable=False, index=True)
+    strategy_type = Column(String(20))
+    direction_bias = Column(String(20))
+    confidence = Column(String(20))
+    score = Column(Float)
+    lots = Column(Integer)
+    entry_time = Column(DateTime, nullable=False, index=True)
+    exit_time = Column(DateTime, nullable=False, index=True)
+    exit_reason = Column(String(50))
+    realized_pnl = Column(Float)
+    execution_cost = Column(Float)
+    net_pnl = Column(Float)
+    margin_required = Column(Float)
+    margin_source = Column(String(20))
+    net_premium = Column(Float)
+    stop_loss_amount = Column(Float)
+    profit_target_amount = Column(Float)
+    spot_at_entry = Column(Float)
+    spot_at_exit = Column(Float)
+    max_drawdown = Column(Float)
+    max_favorable = Column(Float)
+    legs_summary = Column(Text, default="[]")  # JSON array
+    entry_context = Column(Text, default="{}")  # JSON dict
+    exit_context = Column(Text, default="{}")   # JSON dict
+
+
 class SentimentDatabase:
     def __init__(self):
         config = load_config()
@@ -812,3 +845,100 @@ class SentimentDatabase:
                 }
                 for r in rows
             ]
+
+    # ------------------------------------------------------------------
+    # Closed trade persistence
+    # ------------------------------------------------------------------
+
+    def save_trade(self, record, algo_name: str) -> None:
+        """Persist a closed TradeRecord to SQLite (upsert by PK)."""
+        from core.paper_trading_models import TradeRecord
+
+        if not isinstance(record, TradeRecord):
+            raise TypeError("Expected TradeRecord instance")
+
+        with self.SessionLocal() as session:
+            row = ClosedTradeRow(
+                id=record.id,
+                algo_name=algo_name,
+                strategy=record.strategy,
+                strategy_type=record.strategy_type,
+                direction_bias=record.direction_bias,
+                confidence=record.confidence,
+                score=record.score,
+                lots=record.lots,
+                entry_time=record.entry_time,
+                exit_time=record.exit_time,
+                exit_reason=record.exit_reason,
+                realized_pnl=record.realized_pnl,
+                execution_cost=record.execution_cost,
+                net_pnl=record.net_pnl,
+                margin_required=record.margin_required,
+                margin_source=record.margin_source,
+                net_premium=record.net_premium,
+                stop_loss_amount=record.stop_loss_amount,
+                profit_target_amount=record.profit_target_amount,
+                spot_at_entry=record.spot_at_entry,
+                spot_at_exit=record.spot_at_exit,
+                max_drawdown=record.max_drawdown,
+                max_favorable=record.max_favorable,
+                legs_summary=_dumps(record.legs_summary),
+                entry_context=_dumps(record.entry_context or {}),
+                exit_context=_dumps(record.exit_context or {}),
+            )
+            session.merge(row)  # upsert — safe for reruns
+            session.commit()
+
+    def get_trades(self, algo_name: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Return closed trades for an algorithm, ordered by exit_time desc."""
+        with self.SessionLocal() as session:
+            rows = (
+                session.query(ClosedTradeRow)
+                .filter(ClosedTradeRow.algo_name == algo_name)
+                .order_by(ClosedTradeRow.exit_time.desc())
+                .limit(limit)
+                .all()
+            )
+            return [self._trade_row_to_dict(r) for r in rows]
+
+    def get_all_trades(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return closed trades across all algorithms, ordered by exit_time desc."""
+        with self.SessionLocal() as session:
+            rows = (
+                session.query(ClosedTradeRow)
+                .order_by(ClosedTradeRow.exit_time.desc())
+                .limit(limit)
+                .all()
+            )
+            return [self._trade_row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _trade_row_to_dict(r: ClosedTradeRow) -> dict[str, Any]:
+        return {
+            "id": r.id,
+            "algo_name": r.algo_name,
+            "strategy": r.strategy,
+            "strategy_type": r.strategy_type,
+            "direction_bias": r.direction_bias,
+            "confidence": r.confidence,
+            "score": r.score,
+            "lots": r.lots,
+            "entry_time": r.entry_time,
+            "exit_time": r.exit_time,
+            "exit_reason": r.exit_reason,
+            "realized_pnl": r.realized_pnl,
+            "execution_cost": r.execution_cost,
+            "net_pnl": r.net_pnl,
+            "margin_required": r.margin_required,
+            "margin_source": r.margin_source,
+            "net_premium": r.net_premium,
+            "stop_loss_amount": r.stop_loss_amount,
+            "profit_target_amount": r.profit_target_amount,
+            "spot_at_entry": r.spot_at_entry,
+            "spot_at_exit": r.spot_at_exit,
+            "max_drawdown": r.max_drawdown,
+            "max_favorable": r.max_favorable,
+            "legs_summary": json.loads(r.legs_summary) if r.legs_summary else [],
+            "entry_context": json.loads(r.entry_context) if r.entry_context else {},
+            "exit_context": json.loads(r.exit_context) if r.exit_context else {},
+        }
