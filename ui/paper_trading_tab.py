@@ -40,6 +40,11 @@ def _fmt_time(dt: datetime) -> str:
     return _to_ist(dt).strftime("%H:%M:%S")
 
 
+def _fmt_date_time(dt: datetime) -> str:
+    """Format a datetime as IST 'DD Mon HH:MM'."""
+    return _to_ist(dt).strftime("%d %b %H:%M")
+
+
 def _state_key(algo_name: str) -> str:
     return f"paper_trading_state_{algo_name}"
 
@@ -742,8 +747,9 @@ def _render_trade_history(trades: list[dict]) -> None:
 
         net_pnl = t.get("net_pnl", 0) or 0
         pnl_sign = "+" if net_pnl > 0 else ""
+        entry_date_str = _to_ist(t["entry_time"]).strftime("%d %b")
         label = (
-            f"#{i} {t['strategy']} | {t.get('direction_bias', '')} | {t.get('lots', 1)}L | "
+            f"#{i} {entry_date_str} | {t['strategy']} | {t.get('direction_bias', '')} | {t.get('lots', 1)}L | "
             f"{_exit_reason_label(t.get('exit_reason', ''))} | "
             f"{pnl_sign}\u20b9{net_pnl:,.0f}{grade_tag}"
         )
@@ -751,9 +757,9 @@ def _render_trade_history(trades: list[dict]) -> None:
             # Trade summary metrics
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
-                st.metric("Entry", _fmt_time(t["entry_time"]))
+                st.metric("Entry", _fmt_date_time(t["entry_time"]))
             with c2:
-                st.metric("Exit", _fmt_time(t["exit_time"]))
+                st.metric("Exit", _fmt_date_time(t["exit_time"]))
             with c3:
                 st.metric("Premium", _fmt_pnl(t.get("net_premium", 0) or 0))
             with c4:
