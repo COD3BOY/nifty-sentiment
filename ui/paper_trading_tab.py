@@ -921,9 +921,34 @@ def _process_pending_critique(state: PaperTradingState, algo_name: str = "sentin
         return state
 
     trade_id = state.pending_critiques[0]
+
+    # Look up trade record — try in-memory first, then fall back to SQLite
     record = next((t for t in state.trade_log if t.id == trade_id), None)
-    if not record or not record.entry_context:
-        # Skip — no context to critique
+    db_record_dict = None
+    if record is None:
+        try:
+            from core.database import SentimentDatabase
+            db = SentimentDatabase()
+            for t in db.get_trades(algo_name, limit=50):
+                if t["id"] == trade_id:
+                    db_record_dict = t
+                    break
+        except Exception:
+            pass
+
+    if not record and not db_record_dict:
+        # No record found anywhere — skip permanently
+        logger.warning("Critique skipped: trade %s not found in state or DB", trade_id)
+        state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
+        _set_state(state, algo_name)
+        return state
+
+    # Check for entry context
+    has_context = (
+        (record and record.entry_context)
+        or (db_record_dict and db_record_dict.get("entry_context"))
+    )
+    if not has_context:
         state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
         _set_state(state, algo_name)
         return state
@@ -932,8 +957,39 @@ def _process_pending_critique(state: PaperTradingState, algo_name: str = "sentin
         from analyzers.trade_criticizer import criticize_trade
         from core.database import SentimentDatabase
 
-        # Get recent performance for this strategy
         db = SentimentDatabase()
+
+        # Build TradeRecord if we only have a DB dict
+        if record is None and db_record_dict:
+            record = TradeRecord(
+                id=db_record_dict["id"],
+                strategy=db_record_dict["strategy"],
+                strategy_type=db_record_dict.get("strategy_type", "credit"),
+                direction_bias=db_record_dict.get("direction_bias", ""),
+                confidence=db_record_dict.get("confidence", ""),
+                score=db_record_dict.get("score", 0),
+                legs_summary=db_record_dict.get("legs_summary", []),
+                lots=db_record_dict.get("lots", 1),
+                entry_time=db_record_dict["entry_time"],
+                exit_time=db_record_dict["exit_time"],
+                exit_reason=db_record_dict.get("exit_reason", ""),
+                realized_pnl=db_record_dict.get("realized_pnl", 0),
+                execution_cost=db_record_dict.get("execution_cost", 0),
+                net_pnl=db_record_dict.get("net_pnl", 0),
+                margin_required=db_record_dict.get("margin_required", 0),
+                margin_source=db_record_dict.get("margin_source", "static"),
+                net_premium=db_record_dict.get("net_premium", 0),
+                stop_loss_amount=db_record_dict.get("stop_loss_amount", 0),
+                profit_target_amount=db_record_dict.get("profit_target_amount", 0),
+                entry_context=db_record_dict.get("entry_context"),
+                exit_context=db_record_dict.get("exit_context"),
+                spot_at_entry=db_record_dict.get("spot_at_entry", 0),
+                spot_at_exit=db_record_dict.get("spot_at_exit", 0),
+                max_drawdown=db_record_dict.get("max_drawdown", 0),
+                max_favorable=db_record_dict.get("max_favorable", 0),
+            )
+
+        # Get recent performance for this strategy
         recent = db.get_critiques_for_strategy(record.strategy, limit=10)
 
         critique = criticize_trade(record, recent_performance=recent)
@@ -941,9 +997,19 @@ def _process_pending_critique(state: PaperTradingState, algo_name: str = "sentin
         logger.info("Critique saved for trade %s: grade=%s", trade_id, critique.overall_grade)
     except Exception as exc:
         logger.warning("Failed to critique trade %s", trade_id, exc_info=True)
-        st.error(f"Critique failed for trade {trade_id[:8]}: {exc}")
+        # Keep in queue for retry on transient failures (API down, rate limit)
+        # but limit retries via a session counter to avoid infinite loops
+        retry_key = f"critique_retries_{trade_id}"
+        retries = st.session_state.get(retry_key, 0)
+        if retries < 3:
+            st.session_state[retry_key] = retries + 1
+            logger.info("Critique retry %d/3 for trade %s", retries + 1, trade_id)
+            return state
+        else:
+            logger.warning("Critique permanently failed after 3 retries: trade %s", trade_id)
+            st.session_state.pop(retry_key, None)
 
-    # Pop from queue regardless of success/failure
+    # Pop from queue on success or permanent failure
     state = state.model_copy(update={"pending_critiques": state.pending_critiques[1:]})
     _set_state(state, algo_name)
     return state
