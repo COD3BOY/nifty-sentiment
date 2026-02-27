@@ -98,6 +98,7 @@ class OptionsDeskEngine:
         candle_cfg = self._cfg.get("candles", {})
         period = candle_cfg.get("period", "5d")
         interval = candle_cfg.get("interval", "5m")
+        df = None
         try:
             df = self._candle.fetch(period=period, interval=interval)
             if not df.empty:
